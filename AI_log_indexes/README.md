@@ -84,3 +84,85 @@ ChatGPT の会話画面（chat.openai.com / chatgpt.com）に **「会話イン�
     }
   ]
 }
+```
+
+### Markdown
+- ロール（User/AI）とタイムスタンプを付与し、上から順に出力
+- コードブロック（```）はそのまま記録（スタイルやハイライトは閲覧側依存）
+
+### HTML
+- 画面と同じ **バブル型レイアウト + 右側インデックス**
+- HTML 内右パネルから **Markdown / JSON へ再出力**が可能
+
+---
+
+## キーボードショートカット
+
+- **Alt + I**：サイドバーの表示切替
+
+---
+
+## 保存データ（ブラウザ内）
+
+本拡張はデータを外部送信しません。以下は **同一ドメインの `localStorage`** に保存されます。
+
+- `cgpt-index-width`：サイドバー幅  
+- `cgpt-index-visible`：表示状態  
+- `cgpt-index-times:v1:{origin+path}`：メッセージごとのタイムスタンプ
+
+**リセット方法**（会話ページの DevTools コンソールで）:
+```js
+Object.keys(localStorage)
+  .filter(k => k.startsWith('cgpt-index-'))
+  .forEach(k => localStorage.removeItem(k));
+```
+
+---
+
+## トラブルシュート
+
+- **サイドバーが出ない / 空のまま**  
+  - 対象 URL（chat.openai.com / chatgpt.com）か確認  
+  - ページを再読み込み  
+  - DOM を大きく改変する他拡張を一時的に無効化して確認
+- **FAB（右下ボタン）が邪魔**  
+  - `Alt + I` で非表示にできます
+- **HTML を開いても中身が出ない**  
+  - ダウンロードファイルを別タブで開き直す  
+  - 企業ポリシー等でローカル HTML のスクリプト実行が制限されていないか確認
+
+---
+
+## 開発メモ
+
+- **Manifest V3**／コンテンツスクリプト構成
+- 主なメッセージ検出セレクタ（DOM 変更に備え冗長化）
+  - `[data-message-author-role][data-message-id]`
+  - `div[data-testid^="conversation-turn-"]`
+  - `main [role="listitem"]` など
+- **1 行要約**：`headLine()`（最初の句読点または改行まで／最大 120 文字）
+- **エクスポート HTML の安全策**
+  - 内側 `<script>` は **バッククォート（`）不使用**（文字列は `'...'` 統一）
+  - JSON 埋め込みは `& < >` のみ HTML エスケープ＋ `</script>` を `<\/script>` に分割
+
+---
+
+## バージョン
+
+- **v1.0**（初回安定版）  
+  - 会話インデックス（頭だけ 1 行表示）  
+  - Alt+I / FAB / 幅ドラッグ保存  
+  - MD / JSON / HTML エクスポート（HTML 内から再出力可）  
+  - タイムスタンプ付与（`localStorage`）
+
+---
+
+## ライセンス
+
+MIT License
+
+---
+
+## 謝辞 / 商標
+
+- “ChatGPT” は OpenAI の商標です。本拡張は非公式のユーザー拡張であり、OpenAI とは関係ありません。
