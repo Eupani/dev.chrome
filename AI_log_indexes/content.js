@@ -16,8 +16,9 @@
     if (val === 'off') AUTO_EXPORT_ON_CLOSE = false;
   } catch {}
 
-  // Initial snapshot (so SW knows auto flag)
+  // Initial snapshot (so SW knows auto flag) + also ask SW to flush any pending from past failures
   try { chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: { meta:{}, messages:[] }, auto: AUTO_EXPORT_ON_CLOSE }); } catch {}
+  try { chrome.runtime.sendMessage({ type: 'FLUSH_PENDING' }); } catch {}
 
   const SELECTORS = [
     '[data-message-author-role][data-message-id]',
@@ -195,7 +196,7 @@
   autoChk.addEventListener('change', () => {
     AUTO_EXPORT_ON_CLOSE = autoChk.checked;
     try { localStorage.setItem(AUTO_KEY, AUTO_EXPORT_ON_CLOSE ? 'on' : 'off'); } catch {}
-    try { chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: buildData(false), auto: AUTO_EXPORT_ON_CLOSE }); } catch {}
+    try { chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: buildData(), auto: AUTO_EXPORT_ON_CLOSE }); } catch {}
   });
 
   // Resizer
@@ -237,12 +238,10 @@
     const name = 'chatgpt_export_' + timestampForFile() + '.html';
     try {
       const data = buildData();
-      // Unify with SW builder (same HTML as auto-export)
       chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: data, auto: AUTO_EXPORT_ON_CLOSE }, function(){
         try { chrome.runtime.sendMessage({ type: 'SAVE_HTML_FROM_DATA', data: data, filename: name }, () => {}); } catch {}
       });
     } catch (e) {
-      // Fallback: JSON-only page if messaging fails
       const html = '<!doctype html><meta charset="utf-8"><title>Export</title><body><pre>'+escapeHtml(JSON.stringify(buildData(),null,2))+'</pre></body>';
       downloadBlob(new Blob([html], {type:'text/html;charset=utf-8'}), name);
     }

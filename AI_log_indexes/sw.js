@@ -1,5 +1,6 @@
-// sw.js v1.2.2 — Window-close robustness: enqueue pending exports and flush on startup
-const SNAP_PREFIX = 'snap:';
+// sw.js v1.2.3 — robust window-close handling
+const SNAP_PREFIX = 'snap:';                // session mirror
+const SNAP_LOCAL_KEY = 'cgpt:snap_local_v1';// local mirror (array of {tabId, windowId, auto, data, t})
 const PENDING_KEY = 'cgpt:pending_exports_v1';
 
 function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -112,36 +113,39 @@ function buildHtmlFromData(data) {
   return head + mid + tail;
 }
 
-// --- storage helpers for pending queue ---
+// ---- helpers: pending queue ----
 async function getPending() {
-  try {
-    const o = await chrome.storage.local.get(PENDING_KEY);
-    return Array.isArray(o[PENDING_KEY]) ? o[PENDING_KEY] : [];
-  } catch(e) { return []; }
+  try { const o = await chrome.storage.local.get(PENDING_KEY); return Array.isArray(o[PENDING_KEY]) ? o[PENDING_KEY] : []; } catch(e){ return []; }
 }
-async function setPending(list) {
-  try { await chrome.storage.local.set({ [PENDING_KEY]: list }); } catch(e) {}
+async function setPending(list) { try { await chrome.storage.local.set({ [PENDING_KEY]: list }); } catch(e){} }
+async function enqueuePending(item) { const l = await getPending(); l.push(item); await setPending(l); }
+async function removePendingById(id) { const l = await getPending(); await setPending(l.filter(x=>x.id!==id)); }
+
+// ---- helpers: local snapshot mirror ----
+async function getSnapLocalAll() { try{ const o = await chrome.storage.local.get(SNAP_LOCAL_KEY); return Array.isArray(o[SNAP_LOCAL_KEY]) ? o[SNAP_LOCAL_KEY] : []; } catch(e){ return []; } }
+async function setSnapLocalAll(arr) { try{ await chrome.storage.local.set({ [SNAP_LOCAL_KEY]: arr }); } catch(e){} }
+async function upsertSnapLocal(rec) {
+  const arr = await getSnapLocalAll();
+  const i = arr.findIndex(x => x.tabId === rec.tabId);
+  if (i>=0) arr[i] = rec; else arr.push(rec);
+  await setSnapLocalAll(arr);
 }
-async function enqueuePending(item) {
-  const list = await getPending();
-  list.push(item);
-  await setPending(list);
+async function removeSnapLocalByTab(tabId) {
+  const arr = await getSnapLocalAll();
+  const next = arr.filter(x => x.tabId !== tabId);
+  await setSnapLocalAll(next);
 }
-async function removePendingById(id) {
-  const list = await getPending();
-  const next = list.filter(x => x.id !== id);
-  await setPending(next);
+async function findSnapLocalByWindow(windowId) {
+  const arr = await getSnapLocalAll();
+  return arr.filter(x => x.windowId === windowId);
 }
 
-// --- snapshot helpers ---
+// ---- helpers: session snapshot (best-effort) ----
 async function setSnapshot(tabId, snapshot) {
-  if (!tabId) return;
   const key = SNAP_PREFIX + tabId;
   try {
     if (chrome.storage && chrome.storage.session) {
       await chrome.storage.session.set({ [key]: snapshot });
-    } else {
-      await chrome.storage.local.set({ [key]: snapshot });
     }
   } catch (e) {}
 }
@@ -151,29 +155,27 @@ async function getSnapshot(tabId) {
     if (chrome.storage && chrome.storage.session) {
       const o = await chrome.storage.session.get(key);
       return o[key];
-    } else {
-      const o = await chrome.storage.local.get(key);
-      return o[key];
     }
-  } catch (e) { return undefined; }
+  } catch (e) { }
+  return undefined;
 }
 async function clearSnapshot(tabId) {
   const key = SNAP_PREFIX + tabId;
   try {
     if (chrome.storage && chrome.storage.session) {
       await chrome.storage.session.remove(key);
-    } else {
-      await chrome.storage.local.remove(key);
     }
   } catch (e) {}
 }
 
-// --- listeners ---
+// ---- message handlers ----
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg) return;
     if (msg.type === 'SNAPSHOT' && sender.tab && sender.tab.id != null) {
-      await setSnapshot(sender.tab.id, { data: msg.data, auto: !!msg.auto, t: Date.now() });
+      const rec = { tabId: sender.tab.id, windowId: sender.tab.windowId, auto: !!msg.auto, data: msg.data, t: Date.now() };
+      await setSnapshot(sender.tab.id, rec);
+      await upsertSnapLocal(rec); // mirror into local (persists across window close)
       try { sendResponse({ ok: true }); } catch {}
       return;
     }
@@ -185,25 +187,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await enqueuePending({ id, filename, html, createdAt: Date.now() });
         const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
         chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false }, async (dlid) => {
-          if (!chrome.runtime.lastError && dlid) {
-            await removePendingById(id);
-            try { sendResponse({ ok:true, downloadId: dlid }); } catch {}
-          } else {
-            try { sendResponse({ ok:false, error: chrome.runtime.lastError?.message || 'download failed' }); } catch {}
-          }
+          if (!chrome.runtime.lastError && dlid) await removePendingById(id);
+          try { sendResponse({ ok: !chrome.runtime.lastError, downloadId: dlid || null, error: chrome.runtime.lastError?.message }); } catch {}
         });
       } catch (e) {
         try { sendResponse({ ok:false, error: String(e) }); } catch {}
       }
       return true;
     }
+    if (msg.type === 'FLUSH_PENDING') {
+      await flushPending();
+      try { sendResponse({ ok: true }); } catch {}
+      return;
+    }
   })();
   return true;
 });
 
+// ---- events ----
 chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
-  const rec = await getSnapshot(tabId);
-  if (!rec || !rec.auto) { await clearSnapshot(tabId); return; }
+  // Try session first, else local mirror
+  let rec = await getSnapshot(tabId);
+  if (!rec) {
+    const arr = await getSnapLocalAll();
+    rec = arr.find(x => x.tabId === tabId);
+  }
+  if (!rec) return;
+  if (!rec.auto) { await clearSnapshot(tabId); await removeSnapLocalByTab(tabId); return; }
   try {
     const html = buildHtmlFromData(rec.data || {});
     const filename = 'chatgpt_export_' + new Date().toISOString().replace(/[:.]/g,'-') + '.html';
@@ -211,25 +221,44 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     await enqueuePending({ id, filename, html, createdAt: Date.now() });
     const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
     chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false }, async (dlid) => {
-      // If success (when not quitting), remove from pending; otherwise keep for next startup
-      if (!chrome.runtime.lastError && dlid) { await removePendingById(id); }
+      if (!chrome.runtime.lastError && dlid) await removePendingById(id);
       await clearSnapshot(tabId);
+      await removeSnapLocalByTab(tabId);
     });
   } catch (e) {
     await clearSnapshot(tabId);
+    await removeSnapLocalByTab(tabId);
   }
 });
 
-// On browser startup or extension reload, flush any pending exports
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  // Fallback: export all auto snapshots belonging to the closed window
+  const snaps = await findSnapLocalByWindow(windowId);
+  for (const rec of snaps) {
+    if (!rec || !rec.auto) continue;
+    try {
+      const html = buildHtmlFromData(rec.data || {});
+      const filename = 'chatgpt_export_' + new Date().toISOString().replace(/[:.]/g,'-') + '.html';
+      const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2,8);
+      await enqueuePending({ id, filename, html, createdAt: Date.now() });
+      const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+      chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false }, async (dlid) => {
+        if (!chrome.runtime.lastError && dlid) await removePendingById(id);
+      });
+    } catch (e) {}
+  }
+  // clean-out any tabs from that window
+  const all = await getSnapLocalAll();
+  await setSnapLocalAll(all.filter(x => x.windowId !== windowId));
+});
+
 async function flushPending() {
   const list = await getPending();
   for (const item of list) {
     const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(item.html);
     await new Promise((resolve) => {
       chrome.downloads.download({ url, filename: item.filename, conflictAction: 'uniquify', saveAs: false }, async (dlid) => {
-        if (!chrome.runtime.lastError && dlid) {
-          await removePendingById(item.id);
-        }
+        if (!chrome.runtime.lastError && dlid) await removePendingById(item.id);
         resolve();
       });
     });

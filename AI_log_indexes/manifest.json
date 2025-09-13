@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Conversation Index",
-  "version": "1.2.2",
-  "description": "会話インデックス＋HTML/MD/JSONエクスポート。ウィンドウ閉時の取りこぼしを次回起動で自動再保存。",
+  "version": "1.2.3",
+  "description": "会話インデックス＋HTML/MD/JSONエクスポート。ウィンドウ閉時の保存を強化（localミラー＋windows.onRemoved＋起動/訪問時flush）。",
   "icons": {
     "128": "icon128.png"
   },
