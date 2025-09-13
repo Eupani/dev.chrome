@@ -1,3 +1,4 @@
+
 (() => {
   if (window.__CGPT_INDEX_INSTALLED__) return;
   window.__CGPT_INDEX_INSTALLED__ = true;
@@ -6,20 +7,6 @@
   const FAB_ID = "cgpt-index-fab";
   const STORAGE_KEY_WIDTH = "cgpt-index-width";
   const STORAGE_KEY_VIS = "cgpt-index-visible";
-  const TIMES_KEY_PREFIX = "cgpt-index-times:v1:";
-  const AUTO_KEY = "cgpt-autoexport-enabled"; // 'on'|'off'
-
-  // ===== Auto-export setting (default: on) =====
-  let AUTO_EXPORT_ON_CLOSE = true;
-  try {
-    const val = localStorage.getItem(AUTO_KEY);
-    if (val === 'off') AUTO_EXPORT_ON_CLOSE = false;
-  } catch {}
-
-  // Initial snapshot (so SW knows auto flag) + also ask SW to flush any pending from past failures
-  try { chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: { meta:{}, messages:[] }, auto: AUTO_EXPORT_ON_CLOSE }); } catch {}
-  try { chrome.runtime.sendMessage({ type: 'FLUSH_PENDING' }); } catch {}
-
   const SELECTORS = [
     '[data-message-author-role][data-message-id]',
     '[data-message-author-role]',
@@ -32,6 +19,7 @@
   const panel = document.createElement('aside');
   panel.id = PANEL_ID;
   panel.setAttribute('aria-label', 'ChatGPT Conversation Index');
+  panel.classList.add('cgpt-index-hidden');
   panel.innerHTML = ''
   + '<div class="cgpt-index-header">'
   + '  <div class="cgpt-index-title-row">'
@@ -52,9 +40,7 @@
   + '  <button id="cgpt-btn-json" class="cgpt-btn" title="JSONにエクスポート">JSON</button>'
   + '  <button id="cgpt-btn-html" class="cgpt-btn" title="HTMLにエクスポート">HTML</button>'
   + '  <div class="cgpt-footer-spacer"></div>'
-  + '  <label class="cgpt-index-chk" title="タブ/ウィンドウを閉じる直前にHTMLを自動保存">'
-  + '    <input type="checkbox" id="cgpt-autoexport" ' + (AUTO_EXPORT_ON_CLOSE ? 'checked' : '') + '> Auto HTML'
-  + '  </label>'
+  + '  <button id="cgpt-open-settings" class="cgpt-btn" title="設定を開く">設定</button>'
   + '</div>';
   document.documentElement.appendChild(panel);
 
@@ -65,6 +51,12 @@
   fab.title = '会話インデックスの表示切替 (Alt+I)';
   fab.innerHTML = '<span class="cgpt-fab-dot" aria-hidden="true"></span>';
   document.documentElement.appendChild(fab);
+  fab.addEventListener('click', togglePanel);
+  
+  window.addEventListener('scroll', ()=> hideBubble(true), {passive:true});
+  window.addEventListener('resize', ()=> hideBubble(true));
+  fab.addEventListener('click', ()=> hideBubble(true));
+
 
   const listEl = panel.querySelector('#cgpt-index-list');
   const filterEl = panel.querySelector('#cgpt-index-filter');
@@ -75,18 +67,11 @@
   const btnJSON = panel.querySelector('#cgpt-btn-json');
   const btnHTML = panel.querySelector('#cgpt-btn-html');
   const resizer = panel.querySelector('.cgpt-index-resizer');
-  const autoChk = panel.querySelector('#cgpt-autoexport');
+  const btnSettings = panel.querySelector('#cgpt-open-settings');
 
-  // ===== Times =====
-  const timesKey = () => TIMES_KEY_PREFIX + (location.origin + location.pathname);
-  let TIMES = {};
-  try { TIMES = JSON.parse(localStorage.getItem(timesKey()) || "{}"); } catch { TIMES = {}; }
-  const saveTimes = (() => { let t=null; return ()=>{ clearTimeout(t); t=setTimeout(()=>{ try{localStorage.setItem(timesKey(), JSON.stringify(TIMES));}catch{} },300); };})();
-  const ensureTime = (key) => { if(!TIMES[key]){ TIMES[key]=new Date().toISOString(); saveTimes(); } return TIMES[key]; };
-
-  // ===== State restore =====
+  // ===== Panel open/close =====
   function openPanel(){ panel.classList.remove('cgpt-index-hidden'); document.documentElement.classList.add('cgpt-index-open'); setPageOffsetByPanelWidth(); try{localStorage.setItem(STORAGE_KEY_VIS,'visible');}catch{} }
-  function closePanel(){ panel.classList.add('cgpt-index-hidden'); document.documentElement.classList.remove('cgpt-index-open'); try{localStorage.setItem(STORAGE_KEY_VIS,'hidden');}catch{} }
+  function closePanel(){ panel.classList.add('cgpt-index-hidden'); document.documentElement.classList.remove('cgpt-index-open'); setPageOffsetByPanelWidth(); try{localStorage.setItem(STORAGE_KEY_VIS,'hidden');}catch{} }
   function togglePanel(){ panel.classList.contains('cgpt-index-hidden') ? openPanel() : closePanel(); }
   try {
     const savedW = localStorage.getItem(STORAGE_KEY_WIDTH);
@@ -100,175 +85,515 @@
     const w = panel.getBoundingClientRect().width;
     document.documentElement.style.setProperty('--cgpt-index-width', w + 'px');
   }
-  function normalizeText(el){ return (el.innerText||'').replace(/\s+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim(); }
-  function roleOf(el){ const r=el.getAttribute('data-message-author-role'); if(r) return r; const t=(el.innerText||'').slice(0,12); return t.startsWith('You')?'user':'assistant'; }
-
+  function normalizeText(el){
+    let t = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+    return t;
+  }
+  function roleOf(el){
+    const r = el.getAttribute('data-message-author-role') || el.dataset.messageAuthorRole;
+    if (r) return r;
+    const t = (el.innerText||'').slice(0,12);
+    if (/^(You|ユーザー|User)\b/.test(t)) return 'user';
+    return 'assistant';
+  }
+  function roots(){
+    const list=[document];
+    document.querySelectorAll('*').forEach(n=>{ if (n.shadowRoot) list.push(n.shadowRoot); });
+    return list;
+  }
   function getMessageNodes(){
     const seen=new Set(); const nodes=[];
     for(const sel of SELECTORS){
-      document.querySelectorAll(sel).forEach(el=>{
-        if(!(el instanceof Element)) return;
-        if(el.closest('#'+PANEL_ID)) return;
-        const text=(el.innerText||'').trim(); if(!text) return;
-        let container=el;
-        if(!container.hasAttribute('data-message-author-role')){
-          const p=el.closest('[data-message-author-role]'); if(p) container=p;
-        }
-        const mid=container.getAttribute('data-message-id')||container.dataset.messageId||(container.id||'');
-        const key= mid?('mid:'+mid):('len:'+container.outerHTML.length+':'+container.innerText.length);
-        if(seen.has(key)) return; seen.add(key);
-        nodes.push(container);
-      });
-      if(nodes.length) break;
+      for (const root of roots()){
+        root.querySelectorAll(sel).forEach(el=>{
+          if(!(el instanceof Element)) return;
+          if(el.closest('#'+PANEL_ID)) return;
+          let container=el;
+          if(!container.hasAttribute('data-message-author-role')){
+            const p=el.closest('[data-message-author-role]'); if(p) container=p;
+          }
+          const text=(container.innerText||'').trim(); if(!text) return;
+          const mid=container.getAttribute('data-message-id')||container.dataset.messageId||(container.id||'');
+          const key= mid?('mid:'+mid):('len:'+container.outerHTML.length+':'+container.innerText.length);
+          if(seen.has(key)) return; seen.add(key);
+          nodes.push(container);
+        });
+        if(nodes.length) break;
+      }
     }
     return nodes;
   }
+  function firstLine(s){ return (s||'').split(/\n/)[0].slice(0,160); }
 
-  function headLine(text){
-    const t=(text||'').replace(/\s+/g,' ').trim();
-    if(!t) return '(empty)';
-    const m=t.match(/^(.{1,120}?)([。．.!?？]|$)/);
-    return (m&&m[1])?m[1]:t.slice(0,120);
-  }
-
-  let cachedMessages = [];
-  function collectMessages(){
+  // ===== Build list =====
+  function rebuild(){
     const nodes = getMessageNodes();
-    return nodes.map((el,i)=>{
-      if(!el.id) el.id = 'cgpt-msg-' + (i+1);
-      const mid = el.getAttribute('data-message-id')||el.dataset.messageId||null;
-      const key = mid?('mid:'+mid):el.id;
-      const ts = ensureTime(key);
+    const lines = [];
+    for(const el of nodes){
+      const role = roleOf(el);
       const text = normalizeText(el);
-      return { index:i+1, id:el.id, key, mid, role:roleOf(el), text:text, head: headLine(text), time:ts, el };
-    });
-  }
-
-  function buildIndex(){
-    cachedMessages = collectMessages();
-    listEl.innerHTML='';
-    for(const m of cachedMessages){
-      const li=document.createElement('li');
-      li.className='cgpt-index-item';
-      li.dataset.target=m.id; li.dataset.role=m.role;
-      li.innerHTML = '<button class="cgpt-index-link" title="メッセージへ移動"><span class="cgpt-index-role ' + (m.role==='user'?'is-user':'is-ai') + '">' + (m.role==='user'?'User':'AI') + '</span><span class="cgpt-index-snippet">' + escapeHtml(m.head) + '</span></button>';
-      listEl.appendChild(li);
+      if (role==='user' && !chkUser.checked) continue;
+      if (role!=='user' && !chkAssistant.checked) continue;
+      const line = firstLine(text);
+      const id = el.getAttribute('data-message-id') || el.id || '';
+      lines.push({el, role, line, id, text});
     }
-    applyFilter();
-    queueSnapshot();
-  }
+    const q = (filterEl.value || '').trim().toLowerCase();
+    const filtered = q ? lines.filter(x=> (x.line + ' ' + (x.text||'')).toLowerCase().includes(q)) : lines;
 
-  function escapeHtml(s){ return s.replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
-
-  function applyFilter(){
-    const kw=filterEl.value.trim().toLowerCase();
-    const showUser=chkUser.checked, showAssistant=chkAssistant.checked;
-    listEl.querySelectorAll('.cgpt-index-item').forEach(li=>{
-      const role=li.dataset.role;
-      const snip=(li.querySelector('.cgpt-index-snippet')?.textContent||'').toLowerCase();
-      const roleOK=(role==='user'&&showUser)||(role==='assistant'&&showAssistant)||(!['user','assistant'].includes(role));
-      const textOK=!kw||snip.includes(kw);
-      li.style.display=(roleOK&&textOK)?'':'none';
+    listEl.innerHTML = '';
+    filtered.forEach((x, i)=>{
+      const li = document.createElement('li');
+      li.className = 'cgpt-index-item ' + (x.role==='user'?'u':'a');
+      const pillClass = (x.role==='user'?'is-user':'');
+      const pillLabel = (x.role==='user'?'User':'AI');
+      const head = x.line.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+      li.innerHTML = `<span class="rolepill ${pillClass}">${pillLabel}</span><span class="cgpt-index-item-head">${x.line.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;')}</span>`;
+      li.dataset.full = x.text;
+      li.title = x.line;
+      li.addEventListener('mouseenter', ()=>{ showBubbleForLI(li); });
+      li.addEventListener('mouseleave', ()=>{ hideBubble(false); });
+      li.addEventListener('click', ()=>{
+        try{ x.el.scrollIntoView({behavior:'smooth', block:'center'}); }catch{}
+        try{ x.el.classList.add('cgpt-index-highlight'); setTimeout(()=>x.el.classList.remove('cgpt-index-highlight'), 800); }catch{}
+      });
+      listEl.appendChild(li);
     });
-    queueSnapshot();
+  
+    try {
+      if (typeof lines !== 'undefined' && Array.isArray(lines) && lines.length) {
+        const messages = lines.map(x => ({ role: x.role==='user'?'user':'assistant', text: String(x.text||x.line||'') }));
+        const title = (document.title || 'ChatGPT').replace(/[\\/:*?"<>|]+/g,'_');
+        window.__CGPT_LAST_SNAPSHOT__ = { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages };
+      }
+    } catch(e){}}
+
+  
+  // ===== Preview Bubble (吹き出し) =====
+  const bubble = document.createElement('div');
+  bubble.id = 'cgpt-index-bubble';
+  bubble.setAttribute('role','tooltip');
+  bubble.className = 'cgpt-index-bubble';
+  bubble.style.display = 'none';
+  document.documentElement.appendChild(bubble);
+
+  let bubbleTimer = null;
+
+  function hideBubble(immediate){
+    if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer=null; }
+    if (immediate) {
+      bubble.style.display='none';
+      bubble.classList.remove('left','right');
+      bubble.textContent='';
+    } else {
+      bubbleTimer = setTimeout(()=>{ bubble.style.display='none'; bubble.classList.remove('left','right'); bubble.textContent=''; }, 80);
+    }
   }
 
-  // Events
-  listEl.addEventListener('click', e=>{
-    const btn=e.target.closest('.cgpt-index-link'); if(!btn) return;
-    const li=btn.closest('.cgpt-index-item'); const id=li?.dataset.target; if(!id) return;
-    const target=document.getElementById(id); if(!target) return;
-    target.scrollIntoView({behavior:'smooth', block:'start'});
-    target.classList.add('cgpt-index-highlight'); setTimeout(()=>target.classList.remove('cgpt-index-highlight'),1400);
-  });
-  filterEl.addEventListener('input', applyFilter);
-  chkUser.addEventListener('change', applyFilter);
-  chkAssistant.addEventListener('change', applyFilter);
-  refreshBtn.addEventListener('click', buildIndex);
-  btnJSON.addEventListener('click', () => exportJSON());
-  btnMD.addEventListener('click', () => exportMarkdown());
-  btnHTML.addEventListener('click', () => downloadHTMLNow());
+  function showBubbleForLI(li){
+    const text = (li && li.dataset && (li.dataset.full || li.dataset.full === '')) ? li.dataset.full : (li ? (li.getAttribute('title') || li.textContent || '') : '');
+    if (!text) return;
+    if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer=null; }
+    bubble.textContent = text;
+    bubble.style.display = 'block';
+    bubble.style.visibility = 'hidden'; // measure first
 
-  window.addEventListener('keydown', e=>{ if(e.altKey && (e.key==='i'||e.key==='I')) togglePanel(); });
-  fab.addEventListener('click', togglePanel);
+    // desired width
+    const width = Math.min(460, Math.max(280, window.innerWidth * 0.35));
+    bubble.style.width = width + 'px';
 
-  // Auto-export toggle
-  autoChk.addEventListener('change', () => {
-    AUTO_EXPORT_ON_CLOSE = autoChk.checked;
-    try { localStorage.setItem(AUTO_KEY, AUTO_EXPORT_ON_CLOSE ? 'on' : 'off'); } catch {}
-    try { chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: buildData(), auto: AUTO_EXPORT_ON_CLOSE }); } catch {}
-  });
+    // measure height with current content
+    const rect = li.getBoundingClientRect();
+    const bcr = bubble.getBoundingClientRect();
+    let left = rect.left - width - 16;
+    let top = rect.top + (rect.height/2) - (bcr.height/2);
+    top = Math.max(12, Math.min(top, window.innerHeight - bcr.height - 12));
 
-  // Resizer
-  (()=>{
-    let dragging=false, startX=0, startWidth=0;
-    const minW=260, maxW=Math.min(window.innerWidth*0.7,760);
-    const move=(e)=>{ if(!dragging) return; const dx=startX-e.clientX; let w=Math.min(Math.max(startWidth+dx,minW),maxW); panel.style.width=w+'px'; setPageOffsetByPanelWidth(); };
-    const up=()=>{ if(!dragging) return; dragging=false; document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); try{localStorage.setItem(STORAGE_KEY_WIDTH, panel.style.width);}catch{}; queueSnapshot(); };
-    resizer.addEventListener('mousedown', e=>{ dragging=true; startX=e.clientX; startWidth=panel.getBoundingClientRect().width; document.addEventListener('mousemove',move); document.addEventListener('mouseup',up); });
-  })();
+    // if no space on the left, place to right of panel/item
+    if (left < 4) {
+      left = rect.right + 16;
+      bubble.classList.remove('left'); bubble.classList.add('right');
+    } else {
+      bubble.classList.remove('right'); bubble.classList.add('left');
+    }
 
-  // Auto rebuild on DOM changes
-  const rebuild = (()=>{ let t=null; return ()=>{ clearTimeout(t); t=setTimeout(buildIndex, 400); }; })();
-  const obs = new MutationObserver(mut=>{ for(const m of mut){ if(m.type==='childList'||m.type==='attributes'){ rebuild(); break; } } });
-  obs.observe(document.body, {subtree:true, childList:true, attributes:false});
-  setTimeout(buildIndex, 800);
+    bubble.style.left = Math.round(left) + 'px';
+    bubble.style.top  = Math.round(top + window.scrollY) + 'px';
+    bubble.style.visibility = 'visible';
+  }
 
   // ===== Export helpers =====
-  function currentPageMeta(){ const url=location.href; const title=document.title||'ChatGPT Conversation'; const now=new Date().toISOString(); return {url:url,title:title,exported_at:now,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}; }
-  function filteredMessages(){ const kw=filterEl.value.trim().toLowerCase(); const showUser=chkUser.checked, showAssistant=chkAssistant.checked; return (cachedMessages.length?cachedMessages:collectMessages()).filter(m=>{ const roleOK=(m.role==='user'&&showUser)||(m.role==='assistant'&&showAssistant)||(!['user','assistant'].includes(m.role)); const textOK=!kw||m.text.toLowerCase().includes(kw); return roleOK&&textOK; }); }
-  function buildData(){ const meta=currentPageMeta(), msgs=filteredMessages(); return { meta: meta, messages: msgs.map(({index,id,mid,role,text,time})=>({ index:index, id:id, message_id:mid, role:role, text:text, time:time })) }; }
-
-  function exportJSON(){
-    const data=buildData();
-    downloadBlob(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}), 'chatgpt_export_' + timestampForFile() + '.json');
-  }
-  function mdEscape(s){ return s.replace(/^#/gm,'\\#'); }
-  function exportMarkdown(){
-    const data=buildData(), meta=data.meta, msgs=data.messages;
-    let md='# ChatGPT Conversation Export\\n\\n- Title: ' + meta.title + '\\n- URL: ' + meta.url + '\\n- Exported: ' + meta.exported_at + ' (' + meta.timezone + ')\\n\\n---\\n\\n';
-    for(const m of msgs){ const roleTag=m.role==='user'?'User':(m.role==='assistant'?'AI':(m.role||'Unknown')); md+='### ' + roleTag + '  \\\\n*Time:* ' + m.time + '\\n\\n' + mdEscape(m.text) + '\\n\\n---\\n\\n'; }
-    downloadBlob(new Blob([md],{type:'text/markdown;charset=utf-8'}), 'chatgpt_export_' + timestampForFile() + '.md');
-  }
-
-  function timestampForFile(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
-  function downloadBlob(blob, filename){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),4000); }
-
-  function downloadHTMLNow(){
-    const name = 'chatgpt_export_' + timestampForFile() + '.html';
-    try {
-      const data = buildData();
-      chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: data, auto: AUTO_EXPORT_ON_CLOSE }, function(){
-        try { chrome.runtime.sendMessage({ type: 'SAVE_HTML_FROM_DATA', data: data, filename: name }, () => {}); } catch {}
+  function collectData(){
+    const nodes = getMessageNodes();
+    const items = [];
+    nodes.forEach((el, idx)=>{
+      items.push({
+        idx: idx+1,
+        role: roleOf(el),
+        text: el.innerText || el.textContent || '',
       });
-    } catch (e) {
-      const html = '<!doctype html><meta charset="utf-8"><title>Export</title><body><pre>'+escapeHtml(JSON.stringify(buildData(),null,2))+'</pre></body>';
-      downloadBlob(new Blob([html], {type:'text/html;charset=utf-8'}), name);
+    });
+    const title = (document.title || 'ChatGPT').replace(/[\\/:*?"<>|]+/g,'_');
+    if (items.length===0 && window.__CGPT_LAST_SNAPSHOT__ && Array.isArray(window.__CGPT_LAST_SNAPSHOT__.messages) && window.__CGPT_LAST_SNAPSHOT__.messages.length){
+      const snap = window.__CGPT_LAST_SNAPSHOT__;
+      const meta = {
+        title: (snap.meta && snap.meta.title) ? snap.meta.title : title,
+        url: (snap.meta && snap.meta.url) ? snap.meta.url : location.href,
+        exported_at: new Date().toISOString()
+      };
+      return { meta, messages: snap.messages };
     }
+    return { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages: items };
   }
+);
+    });
+    const title = (document.title || 'ChatGPT').replace(/[\\\/:*?"<>|]+/g,'_');
+    if (items.length===0 && window.__CGPT_LAST_SNAPSHOT__ && Array.isArray(window.__CGPT_LAST_SNAPSHOT__.messages) && window.__CGPT_LAST_SNAPSHOT__.messages.length){
+      // FALLBACK_SNAPSHOT: use last snapshot when live scrape returns 0 (settings page / virtualized)
+      const snap = window.__CGPT_LAST_SNAPSHOT__;
+      return { meta: { title: snap.meta && snap.meta.title ? snap.meta.title : title, url: snap.meta && snap.meta.url ? snap.meta.url : location.href, exported_at: new Date().toISOString() }, messages: snap.messages };
+    }
+    return { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages: items };
+  }
+  function exportJSON(){
+    const data = collectData();
+    return JSON.stringify(data, null, 2);
+  }
+  function exportMarkdown(){
+    const data = collectData();
+    const lines = ['# ' + data.meta.title, '', '- URL: ' + data.meta.url, '- Exported: ' + data.meta.exported_at, '', '---',''];
+    data.messages.forEach(m=>{
+      lines.push(`## ${m.idx}. ${m.role === 'user' ? 'User' : 'Assistant'}`);
+      lines.push('');
+      lines.push(m.text);
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+  function exportHTML(){
+    const data = collectData();
+    const esc = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const escJSON = s => s.replace(/[&<>]/g, c => c==='&'?'&amp;':(c==='<'?'&lt;':'&gt;')).replace(/<\/script/gi, '<\/script');
 
-  // ===== Snapshot pipeline for stable auto export =====
-  const queueSnapshot = (()=>{
-    let t=null, lastSent=0;
-    return function(){
-      clearTimeout(t);
-      t=setTimeout(()=>{
-        const now=Date.now();
-        if (now - lastSent < 3000) return; // throttle 3s
-        lastSent = now;
-        try { chrome.runtime.sendMessage({ type: 'SNAPSHOT', data: buildData(), auto: AUTO_EXPORT_ON_CLOSE }); } catch {}
-      }, 600);
-    };
-  })();
+    const page = `<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(data.meta.title)} - Export</title>
+<style>
+  :root{ --bg:#0b1020; --fg:#e5e7eb; --sub:#9ca3af; --border:rgba(255,255,255,.08); --card:#0f172a; --ai:#1f2937; --user:#1e3a8a; --bubble:#111827; --panel:#0f172a; --accent:#3b82f6; }
+  @media (prefers-color-scheme: light){ :root{ --bg:#f8fafc; --fg:#111827; --sub:#6b7280; --border:rgba(0,0,0,.08); --card:#ffffff; --ai:#374151; --user:#1d4ed8; --bubble:#ffffff; --panel:#ffffff; --accent:#2563eb; } }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans JP","Hiragino Kaku Gothic ProN","Meiryo",sans-serif;}
+  .wrap{display:grid;grid-template-columns:1fr 340px;gap:12px;max-width:1200px;margin:20px auto;padding:0 12px;}
+  @media (max-width:960px){ .wrap{grid-template-columns:1fr;} .panel{order:-1;position:static;height:auto;} }
+  header{grid-column:1/-1;margin-bottom:2px} header h1{margin:0 0 6px;font-size:20px;font-weight:700} header .meta{font-size:12px;color:var(--sub)}
+  .row{display:flex;gap:12px;align-items:flex-start}.row.ai{justify-content:flex-start}.row.user{justify-content:flex-end}
+  .bubble{max-width:100%;background:var(--bubble);border:1px solid var(--border);border-radius:16px;padding:12px 14px;margin:10px 0;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+  .meta{font-size:11px;color:var(--sub);margin-bottom:6px}.badge{font-size:11px;border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-weight:600;color:var(--ai)} .user .badge{color:var(--user)} .time{margin-left:6px}
+  .content{white-space:pre-wrap;word-break:break-word}.content pre{background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:10px;padding:10px;overflow:auto}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px}
+  .panel{position:sticky;top:12px;height:calc(100vh - 24px);display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+  .panel header{padding:10px 12px;border-bottom:1px solid var(--border)} .panel header .title{font-size:14px;font-weight:700} .panel .sub{font-size:11px;color:var(--sub);margin-top:4px}
+  .controls{display:grid;grid-template-columns:1fr auto auto;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .controls input[type=search]{padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--fg)}
+  .controls label{font-size:11px;display:flex;gap:6px;align-items:center}
+  .list{list-style:none;margin:0;padding:8px 12px;overflow:auto;flex:1}
+  .item{margin:6px 0}.link{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:8px;width:100%;text-align:left;background:transparent;border:none;border-radius:10px;cursor:pointer;color:inherit}
+  .link:hover{background:rgba(255,255,255,.06)} .rolepill{font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;min-width:34px;text-align:center;font-weight:600;color:var(--ai)} .is-user{color:var(--user)}
+  .link .head{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .footer{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px}.btn{padding:10px 12px;font-size:12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer}.btn.primary{background:var(--accent);color:#fff;border:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ChatGPT Conversation Export</h1>
+    <div class="meta">Title: ${esc(data.meta.title)}<br>URL: <a href="${esc(data.meta.url)}">${esc(data.meta.url)}</a><br>Exported: ${esc(data.meta.exported_at)}</div>
+  </header>
+  <main class="chat" id="chat"></main>
+  <aside class="panel">
+    <header><div class="title">会話インデックス</div><div class="sub">クリックで本文へ移動／検索と役割で絞り込み</div></header>
+    <div class="controls">
+      <input id="q" type="search" placeholder="フィルタ...">
+      <label><input type="checkbox" id="fUser" checked> User</label>
+      <label><input type="checkbox" id="fAI" checked> AI</label>
+    </div>
+    <ul class="list" id="list"></ul>
+    <div class="footer">
+      <button class="btn" id="expMd">Markdown</button>
+      <button class="btn" id="expJson">JSON</button>
+      <button class="btn primary" id="toTop">Top</button>
+    </div>
+  </aside>
+</div>
 
-  // Also snapshot on key user interactions
-  ['click','keydown','scroll','pointerdown','touchstart','wheel'].forEach(ev=>{
-    window.addEventListener(ev, ()=> queueSnapshot(), { passive:true });
+<script id="data" type="application/json">${escJSON(JSON.stringify(data))}</script>
+<script>
+(function(){
+  // Rolling snapshot for export fallback
+  window.__CGPT_LAST_SNAPSHOT__ = null;
+
+  function $(s){ return document.querySelector(s); }
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function headLine(t){ t=String(t||'').replace(/\s+/g,' ').trim(); if(!t) return '(empty)'; var m=t.match(/^(.{1,120}?)([。．.!?？]|$)/); return (m&&m[1])?m[1]:t.slice(0,120); }
+  function ts(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
+
+  var dataEl = document.getElementById('data');
+  var DATA = {};
+  try { DATA = JSON.parse(dataEl.textContent || dataEl.innerText || '{}'); } catch(e){ console.error('JSON parse error', e); DATA={meta:{},messages:[]}; }
+
+  var chat = document.getElementById('chat');
+  DATA.messages.forEach(function(m){
+    var sec = document.createElement('section'); sec.className = 'row ' + (m.role==='user'?'user':'ai'); sec.id = m.id;
+    var bubble = document.createElement('div'); bubble.className='bubble';
+    var meta = document.createElement('div'); meta.className='meta';
+    meta.innerHTML = '<span class="badge">'+(m.role==='user'?'User':'AI')+'</span><span class="time">'+esc(m.time||'')+'</span>';
+    var body = document.createElement('div'); body.className='content'; body.innerHTML = renderBody(m.text);
+    bubble.appendChild(meta); bubble.appendChild(body); sec.appendChild(bubble); chat.appendChild(sec);
   });
 
-  // initial snapshot after load
-  setTimeout(queueSnapshot, 1200);
+  function renderBody(text){
+    var FENCE = String.fromCharCode(96,96,96);
+    var parts = String(text||'').split(FENCE);
+    var out = '';
+    for (var i=0;i<parts.length;i++){
+      if (i % 2 === 1){
+        var seg = parts[i]; var nl = seg.indexOf('\n');
+        var body = (nl !== -1) ? seg.slice(nl+1) : seg;
+        out += '<pre><code>' + esc(body) + '</code></pre>';
+      } else {
+        var para = esc(parts[i]).replace(/\n\n+/g,'</p><p>').replace(/\n/g,'<br>');
+        if (i===0 && !/^\s*<p>/.test(para)) out += '<p>';
+        out += para;
+      }
+    }
+    if (!/</p>\s*$/.test(out)) out += '</p>';
+    return out;
+  }
 
-  // Cleanup
-  window.addEventListener('beforeunload', ()=>{ try{obs.disconnect();}catch{}; queueSnapshot(); });
+  var list = document.getElementById('list');
+  function buildList(){
+    list.innerHTML='';
+    var q = ($('#q').value || '').toLowerCase();
+    var uf = $('#fUser').checked, af = $('#fAI').checked;
+    DATA.messages.forEach(function(m){
+      if (m.role==='user' && !uf) return;
+      if (m.role!=='user' && !af) return;
+      if (q && m.text.toLowerCase().indexOf(q) === -1) return;
+      var li = document.createElement('li'); li.className='item';
+      var btn = document.createElement('button'); btn.className='link'; btn.setAttribute('data-target', m.id);
+      var pill = document.createElement('span'); pill.className='rolepill ' + (m.role==='user'?'is-user':''); pill.textContent = (m.role==='user'?'User':'AI');
+      var head = document.createElement('span'); head.className='head'; head.textContent = headLine(m.text);
+      btn.appendChild(pill); btn.appendChild(head); li.appendChild(btn); list.appendChild(li);
+    });
+  }
+  buildList();
+
+  list.addEventListener('click', function(e){
+    var b = e.target.closest('button.link'); if(!b) return;
+    var id = b.getAttribute('data-target'); var sec = document.getElementById(id); if(!sec) return;
+    sec.scrollIntoView({behavior:'smooth', block:'center'}); sec.classList.add('cgpt-index-highlight');
+    setTimeout(function(){
+  // Rolling snapshot for export fallback
+  window.__CGPT_LAST_SNAPSHOT__ = null;
+ sec.classList.remove('cgpt-index-highlight'); }, 1200);
+  });
+
+  ['input','change'].forEach(function(ev){
+    document.querySelector('.controls').addEventListener(ev, buildList, {passive:true});
+  });
+
+  function toMarkdown(){
+    var lines = ['# ' + (DATA.meta.title||'ChatGPT Conversation'),'','URL: ' + (DATA.meta.url||''),'Exported: ' + (DATA.meta.exported_at||''),''];
+    DATA.messages.forEach(function(m){
+      lines.push('## ' + (m.role==='user'?'User':'AI') + '  ' + (m.time||'')); lines.push(''); lines.push(m.text); lines.push('');
+    });
+    return lines.join('\n');
+  }
+  function toJSON(){ return JSON.stringify(DATA, null, 2); }
+  document.getElementById('expMd').addEventListener('click', function(){
+    var blob = new Blob([toMarkdown()], {type:'text/markdown;charset=utf-8'});
+    downloadBlob(blob, 'chatgpt_export_' + ts() + '.md');
+  });
+  document.getElementById('expJson').addEventListener('click', function(){
+    var blob = new Blob([toJSON()], {type:'application/json;charset=utf-8'});
+    downloadBlob(blob, 'chatgpt_export_' + ts() + '.json');
+  });
+  document.getElementById('toTop').addEventListener('click', function(){ window.scrollTo({top:0,behavior:'smooth'}); });
+
+  function downloadBlob(blob, filename){
+    var u = URL.createObjectURL(blob); var a = document.createElement('a');
+    a.href = u; a.download = filename; document.body.appendChild(a); a.click();
+    setTimeout(function(){
+  // Rolling snapshot for export fallback
+  window.__CGPT_LAST_SNAPSHOT__ = null;
+ URL.revokeObjectURL(u); a.remove(); }, 0);
+  }
+})();
+</script>
+</body></html>`;
+    return page;
+  }
+function timestampForFile(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
+  function baseFileName(){
+    const title = (document.title || 'chatgpt').replace(/[\\\/:*?"<>|]+/g,'_').slice(0,60);
+    return `${title}_${timestampForFile()}`;
+  }
+  function saveTextAs(body, mime, filename){
+    try { chrome.runtime.sendMessage({ type: 'SAVE_TEXT_AS', body, mime, filename }); } catch(e) {}
+  }
+
+  // ===== Wire buttons =====
+  btnMD.addEventListener('click', ()=> saveTextAs(exportMarkdown(), 'text/markdown;charset=utf-8', baseFileName()+'.md'));
+  btnJSON.addEventListener('click', ()=> saveTextAs(exportJSON(), 'application/json;charset=utf-8', baseFileName()+'.json'));
+  btnHTML.addEventListener('click', ()=> saveTextAs(exportHTML(), 'text/html;charset=utf-8', baseFileName()+'.html'));
+
+  // Settings button opens options page
+  btnSettings.addEventListener('click', ()=>{
+    try{
+      chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
+    }catch(e){}
+  });
+
+  // ===== Resizer =====
+  (function(){
+  // Rolling snapshot for export fallback
+  window.__CGPT_LAST_SNAPSHOT__ = null;
+
+    let startX=0, startW=0, dragging=false;
+    resizer.addEventListener('mousedown', (e)=>{
+      dragging=true; startX=e.clientX; startW=panel.getBoundingClientRect().width;
+      document.body.classList.add('cgpt-resizing');
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e)=>{
+      if(!dragging) return;
+      const w = Math.max(260, startW + (e.clientX - startX));
+      panel.style.width = w + 'px';
+      setPageOffsetByPanelWidth();
+    }, {passive:true});
+    window.addEventListener('mouseup', ()=>{
+      if(!dragging) return;
+      dragging=false; document.body.classList.remove('cgpt-resizing');
+      try{ localStorage.setItem(STORAGE_KEY_WIDTH, panel.getBoundingClientRect().width + 'px'); }catch{}
+    });
+  })();
+
+  // ===== Hotkey Alt+I (not while typing) =====
+  function isEditable(target){ return !!(target && (target.closest('input,textarea,[contenteditable="true"]'))); }
+  window.addEventListener('keydown', e=>{
+    if (e.altKey && (e.key==='i'||e.key==='I') && !isEditable(e.target)) togglePanel();
+  });
+
+  // ===== Observe & rebuild =====
+  const obs = new MutationObserver(mut=>{
+    for(const m of mut){ if(m.type==='childList' || m.type==='attributes'){ rebuild(); break; } }
+  });
+  const startObserve = () => { if (document.body) obs.observe(document.body, {subtree:true, childList:true, attributes:true, attributeFilter:['data-message-id','data-message-author-role']}); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startObserve, {once:true});
+  else startObserve();
+
+  // quick initial populate
+  setTimeout(rebuild, 800);
+  // manual refresh
+  refreshBtn.addEventListener('click', rebuild);
+  filterEl.addEventListener('input', rebuild);
+  chkUser.addEventListener('change', rebuild);
+  chkAssistant.addEventListener('change', rebuild);
+
+  // cleanup on unload
+  window.addEventListener('beforeunload', ()=>{ try{obs.disconnect();}catch{} });
+
+  // ===== Auto Idle & Settings integration (reuses export helpers) =====
+  ;(function(){
+  // Rolling snapshot for export fallback
+  window.__CGPT_LAST_SNAPSHOT__ = null;
+
+    const KEY = 'cgpt-settings-v1';
+    const DEFAULTS = { autoEnabled: true, onClose: true, onBlurHidden: true, blurHiddenDelaySec: 60, onIdle: false, idleSec: 120, formats: ['html'] };
+    function nowISO(){ try{ return new Date().toISOString(); } catch{ return ''; } }
+    function loadSettings(){
+      return new Promise(resolve=>{
+        try {
+          chrome.storage.sync.get(KEY, (res)=>{
+            const v = (res && res[KEY]) ? res[KEY] : DEFAULTS;
+            v.blurHiddenDelaySec = Math.min(600, Math.max(1, Number(v.blurHiddenDelaySec||60)));
+            v.idleSec = Math.min(7200, Math.max(10, Number(v.idleSec||120)));
+            if (!Array.isArray(v.formats) || v.formats.length === 0) v.formats = ['html'];
+            resolve(v);
+          });
+        } catch(e) { resolve(DEFAULTS); }
+      });
+    }
+    let cleanupFns = [];
+    let exportedOnce = false;
+
+    function installAuto(v){
+      cleanupFns.forEach(fn=>{ try{fn();}catch{} });
+      cleanupFns = [];
+      exportedOnce = false;
+      if (!v || !v.autoEnabled) return;
+
+      function doExport(reason){
+        // Decide whether we have something to export
+        const probeNodes = (function(){ try{ return getMessageNodes(); }catch(e){ return []; } })();
+        const hasSnap = !!(window.__CGPT_LAST_SNAPSHOT__ && Array.isArray(window.__CGPT_LAST_SNAPSHOT__.messages) && window.__CGPT_LAST_SNAPSHOT__.messages.length);
+        if (!probeNodes.length && !hasSnap) {
+          // Nothing to export; don't consume the one-shot guard
+          try { console.warn('[cgpt-index] Skip export (no messages found)'); } catch(e){}
+          return;
+        }
+        if (exportedOnce) return;
+        const base = baseFileName();
+        const wants = Array.isArray(v.formats) ? v.formats.slice() : ['html'];
+        let saved = false;
+        try {
+          if (wants.includes('html')) { saveTextAs(exportHTML(), 'text/html;charset=utf-8', base+'.html'); saved = true; }
+          if (wants.includes('md'))   { saveTextAs(exportMarkdown(), 'text/markdown;charset=utf-8', base+'.md'); saved = true; }
+          if (wants.includes('json')) { saveTextAs(exportJSON(), 'application/json;charset=utf-8', base+'.json'); saved = true; }
+        } catch(e){}
+        if (saved) exportedOnce = true;
+      }
+      }
+
+      // Close
+      if (v.onClose) {
+        const onUnload = () => doExport('close');
+        window.addEventListener('pagehide', onUnload);
+        window.addEventListener('beforeunload', onUnload);
+        cleanupFns.push(()=>{ window.removeEventListener('pagehide', onUnload); window.removeEventListener('beforeunload', onUnload); });
+      }
+      // Blur & Hidden (AND)
+      if (v.onBlurHidden) {
+        let blurred = false, hidden = document.hidden;
+        let timer = null;
+        const arm = () => { if (blurred && hidden && !timer) { timer = setTimeout(()=>{ timer=null; doExport('blurhidden'); }, Math.max(1, v.blurHiddenDelaySec)*1000); } };
+        const disarm = () => { if (timer) { clearTimeout(timer); timer=null; } };
+        const onBlur = () => { blurred = true; arm(); };
+        const onFocus = () => { blurred = false; disarm(); };
+        const onVis = () => { hidden = document.hidden; if (!hidden) disarm(); else arm(); };
+        window.addEventListener('blur', onBlur);
+        window.addEventListener('focus', onFocus);
+        document.addEventListener('visibilitychange', onVis);
+        cleanupFns.push(()=>{ window.removeEventListener('blur', onBlur); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis); if (timer) clearTimeout(timer); });
+      }
+      // Idle
+      if (v.onIdle) {
+        let idleTimer = null;
+        const reset = () => { if (idleTimer) clearTimeout(idleTimer); idleTimer = setTimeout(()=>{ doExport('idle'); }, Math.max(10, v.idleSec)*1000); };
+        const evs = ['mousemove','keydown','click','scroll','touchstart','pointerdown','wheel'];
+        evs.forEach(ev=>window.addEventListener(ev, reset, {passive:true}));
+        reset();
+        cleanupFns.push(()=>{ if (idleTimer) clearTimeout(idleTimer); evs.forEach(ev=>window.removeEventListener(ev, reset)); });
+      }
+    }
+
+    loadSettings().then(installAuto);
+    try {
+      chrome.storage.onChanged.addListener((changes, area)=>{
+        if (area === 'sync' && changes && changes[KEY]) {
+          const v = changes[KEY].newValue || DEFAULTS;
+          installAuto(v);
+        }
+      });
+    } catch {}
+  })();
+
 })();

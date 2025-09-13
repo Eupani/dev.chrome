@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>ChatGPT Conversation Index - 設定</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root{
+      --bg:#0b1020; --fg:#e5e7eb; --sub:#9ca3af; --border:#26324e; --accent:#3b82f6;
+      --bg2:#0f172a; --good:#10b981; --bad:#ef4444;
+    }
+    @media (prefers-color-scheme: light){
+      :root{ --bg:#f8fafc; --fg:#111827; --sub:#6b7280; --border:#d1d5db; --accent:#2563eb; --bg2:#ffffff; }
+    }
+    html,body{height:100%}
+    body{margin:0; background:var(--bg); color:var(--fg); font:14px/1.6 system-ui, -apple-system, Segoe UI, Roboto, Inter, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";}
+    header{position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--border); padding:16px 20px;}
+    h1{margin:0; font-size:18px}
+    main{max-width:920px; margin:0 auto; padding:20px}
+    section{background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin:14px 0;}
+    h2{margin:0 0 8px; font-size:16px}
+    .row{display:grid; grid-template-columns: 1.2fr 2fr; gap:14px; padding:8px 0; align-items:center; border-top:1px dashed var(--border);}
+    .row:first-of-type{border-top:none}
+    label strong{font-weight:600}
+    .hint{color:var(--sub); font-size:12px}
+    input[type="number"]{padding:8px 10px; width:140px; border-radius:8px; border:1px solid var(--border); background:transparent; color:var(--fg);}
+    input[type="checkbox"]{transform: scale(1.15); margin-right:6px}
+    .fmt{display:flex; gap:12px; flex-wrap:wrap}
+    .actions{display:flex; gap:10px; justify-content:flex-end; margin-top:14px}
+    button{padding:9px 14px; border-radius:10px; border:1px solid var(--border); background:var(--accent); color:#fff; cursor:pointer; font-weight:600}
+    button.secondary{background:transparent; color:var(--fg)}
+    .save-ok{color:var(--good); font-weight:600; margin-left:8px; display:none}
+  
+    /* autoEnabled disabled state */
+    .disabled-block { opacity: .55; }
+    .disabled-block input, .disabled-block button, .disabled-block select { pointer-events: none; }
+  
+    .titlebar{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px}
+    .titlebar .toggle{font-weight:600; font-size:13px; white-space:nowrap}
+    .titlebar .toggle input{transform: scale(1.1); margin-right:6px}
+    .actions{position:relative}
+    /* toast for save */
+    .toast{
+      position:absolute; right:10px; bottom: calc(100% + 8px);
+      background: var(--accent); color:#fff; padding:6px 10px; border-radius:12px;
+      box-shadow: 0 8px 18px rgba(0,0,0,.25);
+      font-weight:600; font-size:12px; opacity:0; transform: translateY(4px);
+      transition: opacity .18s ease, transform .18s ease;
+      pointer-events:none;
+    }
+    .toast::after{
+      content:""; position:absolute; left:auto; right:16px; top:100%;
+      border:6px solid transparent; border-top-color: var(--accent);
+    }
+    .toast.show{ opacity:1; transform: translateY(0); }
+  
+    .titlebar{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px}
+    .titlebar .toggle.main{display:flex; align-items:center; gap:10px;}
+    .titlebar .toggle.main input{transform:scale(1.2)}
+    .titlebar .toggle-title{font-size:16px; font-weight:700}
+    /* fixed toast (no layout shift) */
+    .toast-fixed{
+      position: fixed; right: 18px; top: 14px; z-index: 999999;
+      background: var(--accent); color:#fff; padding:8px 12px; border-radius:12px;
+      box-shadow: 0 10px 20px rgba(0,0,0,.25);
+      font-weight:600; font-size:12px; opacity:0; transform: translateY(-6px);
+      transition: opacity .18s ease, transform .18s ease;
+      pointer-events:none;
+    }
+    .toast-fixed.show{ opacity:1; transform: translateY(0); }
+  
+    /* child rows = sub toggles under the parent Auto Idle */
+    .row.child{
+      position: relative;
+      margin-left: 10px;
+      padding-left: 16px;
+      border-left: 2px solid var(--border);
+    }
+    .row.child::before{
+      content:"";
+      position:absolute;
+      left:-2px; top:-6px; bottom:-6px;
+      border-left: 2px solid var(--border);
+      opacity:.35;
+    }
+    .row.child .hint{ color: var(--sub); }
+
+  </style>
+</head>
+<body>
+  <header><h1>ChatGPT Conversation Index — 設定</h1></header>
+  <main>
+    <section>
+      <div class="titlebar">
+        <label class="toggle main">
+          <input type="checkbox" id="autoEnabled">
+          <span class="toggle-title">自動エクスポート（Auto Idle）</span>
+        </label>
+      </div>
+      </div>
+      <div class="row child">
+        <label><strong><input type="checkbox" id="onClose"> タブ/ウィンドウを閉じた時</strong></label>
+        <div class="hint">ページ終了時に最新の会話を保存します。</div>
+      </div>
+      <div class="row child">
+        <label><strong><input type="checkbox" id="onBlurHidden"> 画面が <u>非表示</u> かつ <u>ウィンドウが非アクティブ</u>（blur & hidden）</strong></label>
+        <div>
+          <div class="hint">別タブへ切替・ウィンドウ最小化・他ウィンドウが前面になるなど、このタブを見ていない状態になったら、下の「遅延（秒）」だけ待って保存します。</div>
+          <div style="margin-top:6px">
+            遅延（秒）：<span class="hint">1–600</span> <input type="number" id="blurHiddenDelaySec" min="1" step="1" value="15">
+          </div>
+        </div>
+      </div>
+      <div class="row child">
+        <label><strong><input type="checkbox" id="onIdle"> 入力などの操作がない（アイドル）</strong></label>
+        <div>
+          <div class="hint">マウス/キー/スクロール等の操作が一定時間ない場合に保存します。</div>
+          <div style="margin-top:6px">
+            アイドル秒数：<span class="hint">10–7200</span> <input type="number" id="idleSec" min="10" step="5" value="300">
+          </div>
+        </div>
+      </div>
+      <div class="row child">
+        <label><strong>保存形式</strong></label>
+        <div class="fmt">
+          <label><input type="checkbox" class="fmtCheck" value="html"> HTML</label>
+          <label><input type="checkbox" class="fmtCheck" value="md"> Markdown</label>
+          <label><input type="checkbox" class="fmtCheck" value="json"> JSON</label>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="secondary" id="resetBtn">既定値に戻す</button>
+        <button id="saveBtn">保存</button>
+        <div id="okToast" class="toast" role="status" aria-live="polite">保存しました</div>
+      </div>
+    <div class="hint" style="margin-top:8px">Settings UI build <code>1.2.5</code> (2025-09-13 18:08 UTC)</div>
+    </section>
+    <section>
+      <h2>メモ</h2>
+      <div class="hint">
+        ここでの設定は <code>chrome.storage.sync</code> に保存され、端末間で同期されます。<br>
+        設定を反映するには、ChatGPT のタブを一度リロードしてください。
+      </div>
+    </section>
+  
+    <div id="okToastFixed" class="toast-fixed" role="status" aria-live="polite">保存しました</div>
+  </main>
+
+
+  <script src="settings.js" defer></script>
+</body>
+</html>

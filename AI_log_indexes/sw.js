@@ -169,6 +169,7 @@ async function clearSnapshot(tabId) {
 }
 
 // ---- message handlers ----
+// Auto-appended handlers for text save
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg) return;
@@ -266,3 +267,42 @@ async function flushPending() {
 }
 chrome.runtime.onStartup.addListener(flushPending);
 chrome.runtime.onInstalled.addListener(flushPending);
+
+// Dedicated simple listener for text saves (MD/JSON)
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return;
+  if (msg.type === 'SAVE_TEXT_AS') {
+    try {
+      const body = String(msg.body || '');
+      const mime = String(msg.mime || 'text/plain;charset=utf-8');
+      const filename = (msg.filename && String(msg.filename)) || ('chatgpt_export_' + new Date().toISOString().replace(/[:.]/g,'-') + '.txt');
+      const url = 'data:' + mime + ',' + encodeURIComponent(body);
+      chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false }, () => {
+        try { sendResponse({ok:true}); } catch(e){}
+      });
+      return true;
+    } catch (e) {
+      try { sendResponse({ok:false, error:String(e)}); } catch(_){}
+    }
+  }
+});
+
+
+// Open Options Page handler (from content script)
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return;
+  if (msg.type === 'OPEN_OPTIONS') {
+    try {
+      if (chrome.runtime.openOptionsPage) {
+        chrome.runtime.openOptionsPage();
+      } else {
+        const url = chrome.runtime.getURL('settings.html');
+        chrome.tabs.create({ url });
+      }
+      try { sendResponse({ ok: true }); } catch(e){}
+    } catch (e) {
+      try { sendResponse({ ok: false, error: String(e) }); } catch(_){}
+    }
+    return true;
+  }
+});
