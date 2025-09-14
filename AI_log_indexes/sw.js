@@ -307,3 +307,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
+
+// ---- keyboard shortcuts (chrome://extensions/shortcuts) ----
+try {
+  chrome.commands.onCommand.addListener(async (command) => {
+    const map = {
+      'export_markdown': 'md',
+      'export_json': 'json',
+      'export_html': 'html',
+    };
+    const fmt = map[command];
+    if (!fmt) return;
+
+    try {
+      // Prefer the active tab in the focused window
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const send = async (tabId) => {
+        try { await chrome.tabs.sendMessage(tabId, { type: 'EXPORT_REQUEST', format: fmt }); } catch (e) {}
+      };
+
+      const isChat = (u) => /^https:\/\/(chat\.openai\.com|chatgpt\.com)\//.test(String(u||''));
+
+      if (active && active.id && isChat(active.url)) {
+        await send(active.id);
+        return;
+      }
+      // Fallback to any ChatGPT tab
+      const tabs = await chrome.tabs.query({ url: ["https://chat.openai.com/*","https://chatgpt.com/*"] });
+      if (tabs && tabs.length) await send(tabs[0].id);
+    } catch (e) {
+      // ignore
+    }
+  });
+} catch (_) {}
+

@@ -37,5 +37,25 @@
   "options_ui": {
     "page": "settings.html",
     "open_in_tab": true
+  },
+  "commands": {
+    "export_markdown": {
+      "suggested_key": {
+        "default": "Alt+Shift+M"
+      },
+      "description": "Export current chat as Markdown"
+    },
+    "export_json": {
+      "suggested_key": {
+        "default": "Alt+Shift+J"
+      },
+      "description": "Export current chat as JSON"
+    },
+    "export_html": {
+      "suggested_key": {
+        "default": "Alt+Shift+H"
+      },
+      "description": "Export current chat as HTML"
+    }
   }
 }

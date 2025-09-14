@@ -418,7 +418,25 @@ function exportHTML(){
   }
 };
 
-  // ===== Wire buttons =====
+  
+  // ===== Keyboard shortcuts bridge (from service worker commands) =====
+  try {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (!msg || msg.type !== 'EXPORT_REQUEST') return;
+      try {
+        const f = String(msg.format || '').toLowerCase();
+        if (f === 'md' || f === 'markdown')      exportMarkdown();
+        else if (f === 'json')                   exportJSON();
+        else if (f === 'html')                   exportHTML();
+        try { sendResponse && sendResponse({ ok: true }); } catch(_){}
+      } catch(e) {
+        try { sendResponse && sendResponse({ ok: false, error: String(e) }); } catch(_){}
+      }
+      // Indicate we may respond asynchronously (safer in MV3 even if we don't)
+      return true;
+    });
+  } catch(_) {}
+// ===== Wire buttons =====
 btnMD.addEventListener('click', exportMarkdown);
 btnJSON.addEventListener('click', exportJSON);
 btnHTML.addEventListener('click', exportHTML);
