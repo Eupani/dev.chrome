@@ -14,6 +14,7 @@
     'main [role="listitem"]',
     'article[data-message-author-role]',
   ];
+  let CACHED = [];
 
   // ===== Panel =====
   const panel = document.createElement('aside');
@@ -195,9 +196,18 @@
         const title = (document.title || 'ChatGPT').replace(/[\\/:*?"<>|]+/g,'_');
         window.__CGPT_LAST_SNAPSHOT__ = { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages };
       }
-    } catch(e){}}
+    } catch(e){}
 
-  
+    // ★★★ ここを関数の中に移動（lines が見える位置）
+    CACHED = lines.map((x,i)=>({
+      index: i+1,
+      id: x.id || ('cgpt-exp-' + (i+1)),
+      role: x.role === 'user' ? 'user' : 'assistant',
+      text: String(x.text || x.line || ''),
+      time: x.time || ''
+    }));
+  }
+
   // ===== Preview Bubble (吹き出し) =====
   const bubble = document.createElement('div');
   bubble.id = 'cgpt-index-bubble';
@@ -251,52 +261,83 @@
     bubble.style.visibility = 'visible';
   }
 
-  // ===== Export helpers =====
-  
-function collectData(){
-    const nodes = getMessageNodes();
-    const items = [];
-    nodes.forEach((el, idx)=>{
-      const iso = seenISO(el);
-      const when = fmtLocal(iso);
-      items.push({
-        idx: idx+1,
-        role: roleOf(el),
-        text: el.innerText || el.textContent || '',
-        time: when
-      });
-    });
-    const title = (document.title || 'ChatGPT').replace(/[\\/:*?"<>|]+/g,'_');
-    if (items.length===0 && window.__CGPT_LAST_SNAPSHOT__ && Array.isArray(window.__CGPT_LAST_SNAPSHOT__.messages) && window.__CGPT_LAST_SNAPSHOT__.messages.length){
-      const snap = window.__CGPT_LAST_SNAPSHOT__;
-      const meta = { title: (snap.meta && snap.meta.title) ? snap.meta.title : title, url: (snap.meta && snap.meta.url) ? snap.meta.url : location.href, exported_at: new Date().toISOString() };
-      return { meta, messages: snap.messages };
-    }
-    return { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages: items };
-  }
-function exportJSON(){
-    const data = collectData();
-    return JSON.stringify(data, null, 2);
-  }
-  function exportMarkdown(){
-    const data = collectData();
-    const lines = ['# ' + data.meta.title, '', '- URL: ' + data.meta.url, '- Exported: ' + data.meta.exported_at, '', '---',''];
-    data.messages.forEach(m=>{
-      lines.push(`## ${m.idx}. ${m.role === 'user' ? 'User' : 'Assistant'}  ${m.time||''}`);
-      lines.push('');
-      lines.push(m.text);
-      lines.push('');
-    });
-    return lines.join('\n');
-  }
-  function exportHTML(){
-    const data = collectData();
-    const esc = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-    const escJSON = s => s.replace(/[&<>]/g, c => c==='&'?'&amp;':(c==='<'?'&lt;':'&gt;')).replace(/<\/script/gi, '<\/script');
+// ===== Export helpers =====
+function currentPageMeta(){
+  return {
+    title: (document.title || 'ChatGPT'),
+    url: location.href,
+    exported_at: new Date().toISOString(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+  };
+}
+function filteredMessages(){
+  const kw = (filterEl.value||'').trim().toLowerCase();
+  const showU = chkUser.checked, showA = chkAssistant.checked;
+  return CACHED.filter(m=>{
+    const roleOK = (m.role==='user'&&showU) || (m.role==='assistant'&&showA);
+    const textOK = !kw || (m.text||'').toLowerCase().includes(kw);
+    return roleOK && textOK;
+  });
+}
+function mdEscape(s){ return String(s||'').replace(/^#/gm,'\\#'); }
+function baseFileName(){
+  const title = (document.title || 'chatgpt').replace(/[\\\/:*?"<>|]+/g,'_').slice(0,60);
+  return `${title}_${timestampForFile()}`;
+}
+function timestampForFile(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
 
-    const page = `<!doctype html>
+// ⬇︎ここが重要：</script> を <\/script> に変換するために **'\\/'** を使う
+function escJSON(s){
+  return String(s)
+    .replace(/[&<>]/g, c => c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')
+    .replace(/<\/script/gi, '<\\/script'); // ← これが1本バックスラッシュだと壊れます
+}
+
+function saveTextAs(body, mime, filename){
+  try { chrome.runtime.sendMessage({ type: 'SAVE_TEXT_AS', body, mime, filename }); } catch(e) {}
+}
+
+function exportJSON(){
+  const data = { meta: currentPageMeta(), messages: filteredMessages() };
+  saveTextAs(JSON.stringify(data, null, 2), 'application/json;charset=utf-8', baseFileName()+'.json');
+}
+function exportMarkdown(){
+  const meta = currentPageMeta();
+  const msgs = filteredMessages();
+  let md = `# ChatGPT Conversation Export
+
+- Title: ${meta.title}
+- URL: ${meta.url}
+- Exported: ${meta.exported_at} (${meta.timezone})
+
+---
+`;
+  for (const m of msgs){
+    const role = m.role==='user'?'User':'AI';
+    md += `### ${role}  \\
+*Time:* ${m.time}
+
+${mdEscape(m.text)}
+
+---
+`;
+  }
+  saveTextAs(md, 'text/markdown;charset=utf-8', baseFileName()+'.md');
+}
+
+// === HTML（サイドバー付き・今の見た目）のエクスポート ===
+function exportHTML(){
+  const meta = currentPageMeta();
+  const msgs = filteredMessages();
+  const data = { meta, messages: msgs };
+
+  // JSONを<script type="application/json">に安全に埋め込む
+  const dataJSON = escJSON(JSON.stringify(data));
+
+  // 内側 <script> に書くコードでは、外側テンプレ内のエスケープのため **'\\n'** を使う
+  const page = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(data.meta.title)} - Export</title>
+<title>${meta.title.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')} - Export</title>
 <style>
   :root{ --bg:#0b1020; --fg:#e5e7eb; --sub:#9ca3af; --border:rgba(255,255,255,.08); --card:#0f172a; --ai:#1f2937; --user:#1e3a8a; --bubble:#111827; --panel:#0f172a; --accent:#3b82f6; }
   @media (prefers-color-scheme: light){ :root{ --bg:#f8fafc; --fg:#111827; --sub:#6b7280; --border:rgba(0,0,0,.08); --card:#ffffff; --ai:#374151; --user:#1d4ed8; --bubble:#ffffff; --panel:#ffffff; --accent:#2563eb; } }
@@ -324,10 +365,12 @@ function exportJSON(){
 <div class="wrap">
   <header>
     <h1>ChatGPT Conversation Export</h1>
-    <div class="meta">Title: ${esc(data.meta.title)}<br>URL: <a href="${esc(data.meta.url)}">${esc(data.meta.url)}</a><br>Exported: ${esc(data.meta.exported_at)}</div>
+    <div class="meta">Title: ${meta.title.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')}<br>URL: <a href="${meta.url.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')}">${meta.url.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')}</a><br>Exported: ${meta.exported_at} (${meta.timezone})</div>
   </header>
+
   <main class="chat" id="chat"></main>
-  <aside class="panel">
+
+  <aside class="panel" id="panel">
     <header><div class="title">会話インデックス</div><div class="sub">クリックで本文へ移動／検索と役割で絞り込み</div></header>
     <div class="controls">
       <input id="q" type="search" placeholder="フィルタ...">
@@ -336,133 +379,96 @@ function exportJSON(){
     </div>
     <ul class="list" id="list"></ul>
     <div class="footer">
-      <button class="btn" id="expMd">Markdown</button>
+      <button class="btn primary" id="expMd">Markdown</button>
       <button class="btn" id="expJson">JSON</button>
-      <button class="btn primary" id="toTop">Top</button>
     </div>
   </aside>
 </div>
 
-<script id="data" type="application/json">${escJSON(JSON.stringify(data))}</script>
+<script id="data" type="application/json">${dataJSON}</script>
 <script>
-(function(){
-  // Rolling snapshot for export fallback
-  window.__CGPT_LAST_SNAPSHOT__ = null;
-
-  function $(s){ return document.querySelector(s); }
-  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-  function headLine(t){ t=String(t||'').replace(/\s+/g,' ').trim(); if(!t) return '(empty)'; var m=t.match(/^(.{1,120}?)([。．.!?？]|$)/); return (m&&m[1])?m[1]:t.slice(0,120); }
-  function ts(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
-
-  var dataEl = document.getElementById('data');
-  var DATA = {};
-  try { DATA = JSON.parse(dataEl.textContent || dataEl.innerText || '{}'); } catch(e){ console.error('JSON parse error', e); DATA={meta:{},messages:[]}; }
-
+  var DATA = JSON.parse(document.getElementById('data').textContent);
   var chat = document.getElementById('chat');
-  DATA.messages.forEach(function(m){
-    var sec = document.createElement('section'); sec.className = 'row ' + (m.role==='user'?'user':'ai'); sec.id = m.id;
-    var bubble = document.createElement('div'); bubble.className='bubble';
-    var meta = document.createElement('div'); meta.className='meta';
-    meta.innerHTML = '<span class="badge">'+(m.role==='user'?'User':'AI')+'</span><span class="time">'+esc(m.time||'')+'</span>';
-    var body = document.createElement('div'); body.className='content'; body.innerHTML = renderBody(m.text);
-    bubble.appendChild(meta); bubble.appendChild(body); sec.appendChild(bubble); chat.appendChild(sec);
-  });
+  var list = document.getElementById('list');
+  var inF = document.getElementById('q');
+  var cbU = document.getElementById('fUser');
+  var cbA = document.getElementById('fAI');
 
+  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function headLine(text){
+    var t=String(text||'').replace(/\\s+/g,' ').trim();
+    if(!t) return '(empty)';
+    var m=t.match(/^(.{1,120}?)([。．.!?？]|$)/);
+    return (m&&m[1])?m[1]:t.slice(0,120);
+  }
   function renderBody(text){
     var FENCE = String.fromCharCode(96,96,96);
     var parts = String(text||'').split(FENCE);
     var out = '';
     for (var i=0;i<parts.length;i++){
       if (i % 2 === 1){
-        var seg = parts[i]; var nl = seg.indexOf('\n');
+        var seg = parts[i]; var nl = seg.indexOf('\\\\n'); // ← **重要**: '\\n'
         var body = (nl !== -1) ? seg.slice(nl+1) : seg;
         out += '<pre><code>' + esc(body) + '</code></pre>';
       } else {
-        var para = esc(parts[i]).replace(/\n\n+/g,'</p><p>').replace(/\n/g,'<br>');
-        if (i===0 && !/^\s*<p>/.test(para)) out += '<p>';
+        var para = esc(parts[i]).replace(/\\n\\n+/g,'</p><p>').replace(/\\n/g,'<br>');
+        if (i===0 && !/^\\s*<p>/.test(para)) out += '<p>';
         out += para;
       }
     }
-    if (!/</p>\s*$/.test(out)) out += '</p>';
+    if (!/<\\/p>\\s*$/.test(out)) out += '</p>';
     return out;
   }
 
-  var list = document.getElementById('list');
-  function buildList(){
-    list.innerHTML='';
-    var q = ($('#q').value || '').toLowerCase();
-    var uf = $('#fUser').checked, af = $('#fAI').checked;
-    DATA.messages.forEach(function(m){
-      if (m.role==='user' && !uf) return;
-      if (m.role!=='user' && !af) return;
-      if (q && m.text.toLowerCase().indexOf(q) === -1) return;
-      var li = document.createElement('li'); li.className='item';
-      var btn = document.createElement('button'); btn.className='link'; btn.setAttribute('data-target', m.id);
-      var pill = document.createElement('span'); pill.className='rolepill ' + (m.role==='user'?'is-user':''); pill.textContent = (m.role==='user'?'User':'AI');
-      var head = document.createElement('span'); head.className='head'; head.textContent = headLine(m.text);
-      btn.appendChild(pill); btn.appendChild(head); li.appendChild(btn); list.appendChild(li);
+  function build(){
+    chat.innerHTML=''; list.innerHTML='';
+    var kw=(inF.value||'').toLowerCase();
+    var showU=cbU.checked, showA=cbA.checked;
+    var msgs = DATA.messages.filter(function(m){
+      var roleOK=(m.role==='user'&&showU)||(m.role==='assistant'&&showA)||(!['user','assistant'].includes(m.role));
+      var textOK=!kw||(m.text||'').toLowerCase().includes(kw);
+      return roleOK && textOK;
     });
+    for (var i=0;i<msgs.length;i++){
+      var m=msgs[i];
+      var row=document.createElement('section');
+      row.className='row ' + (m.role==='user'?'user':'ai');
+      row.id=m.id||('m'+(i+1));
+      row.innerHTML='<div class="bubble"><div class="meta"><span class="badge">'+(m.role==='user'?'User':'AI')+'</span><span class="time">'+(m.time||'')+'</span></div><div class="content">'+renderBody(m.text||'')+'</div></div>';
+      chat.appendChild(row);
+
+      var li=document.createElement('li'); li.className='item';
+      li.innerHTML='<button class="link"><span class="rolepill '+(m.role==='user'?'is-user':'')+'">'+(m.role==='user'?'User':'AI')+'</span><span class="head">'+esc(headLine(m.text||''))+'</span></button>';
+      li.querySelector('.link').addEventListener('click', (function(targetId){ return function(){ var el=document.getElementById(targetId); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }; })(row.id));
+      list.appendChild(li);
+    }
   }
-  buildList();
+  inF.addEventListener('input', build);
+  cbU.addEventListener('change', build);
+  cbA.addEventListener('change', build);
+  build();
 
-  list.addEventListener('click', function(e){
-    var b = e.target.closest('button.link'); if(!b) return;
-    var id = b.getAttribute('data-target'); var sec = document.getElementById(id); if(!sec) return;
-    sec.scrollIntoView({behavior:'smooth', block:'center'}); sec.classList.add('cgpt-index-highlight');
-    setTimeout(function(){
-  // Rolling snapshot for export fallback
-  window.__CGPT_LAST_SNAPSHOT__ = null;
- sec.classList.remove('cgpt-index-highlight'); }, 1200);
-  });
+  function ts(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
+  function dl(blob, name){ var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); setTimeout(function(){URL.revokeObjectURL(a.href);}, 3000); }
 
-  ['input','change'].forEach(function(ev){
-    document.querySelector('.controls').addEventListener(ev, buildList, {passive:true});
-  });
-
-  function toMarkdown(){
-    var lines = ['# ' + (DATA.meta.title||'ChatGPT Conversation'),'','URL: ' + (DATA.meta.url||''),'Exported: ' + (DATA.meta.exported_at||''),''];
-    DATA.messages.forEach(function(m){
-      lines.push('## ' + (m.role==='user'?'User':'AI') + '  ' + (m.time||'')); lines.push(''); lines.push(m.text); lines.push('');
-    });
-    return lines.join('\n');
-  }
-  function toJSON(){ return JSON.stringify(DATA, null, 2); }
-  document.getElementById('expMd').addEventListener('click', function(){
-    var blob = new Blob([toMarkdown()], {type:'text/markdown;charset=utf-8'});
-    downloadBlob(blob, 'chatgpt_export_' + ts() + '.md');
-  });
   document.getElementById('expJson').addEventListener('click', function(){
-    var blob = new Blob([toJSON()], {type:'application/json;charset=utf-8'});
-    downloadBlob(blob, 'chatgpt_export_' + ts() + '.json');
+    dl(new Blob([JSON.stringify(DATA,null,2)],{type:'application/json;charset=utf-8'}),'chatgpt_export_'+ts()+'.json');
   });
-  document.getElementById('toTop').addEventListener('click', function(){ window.scrollTo({top:0,behavior:'smooth'}); });
-
-  function downloadBlob(blob, filename){
-    var u = URL.createObjectURL(blob); var a = document.createElement('a');
-    a.href = u; a.download = filename; document.body.appendChild(a); a.click();
-    setTimeout(function(){
-  // Rolling snapshot for export fallback
-  window.__CGPT_LAST_SNAPSHOT__ = null;
- URL.revokeObjectURL(u); a.remove(); }, 0);
-  }
-})();
+  document.getElementById('expMd').addEventListener('click', function(){
+    var meta=DATA.meta, msgs=DATA.messages, md = '# ChatGPT Conversation Export\\n\\n- Title: '+meta.title+'\\n- URL: '+meta.url+'\\n- Exported: '+meta.exported_at+' ('+meta.timezone+')\\n\\n---\\n\\n';
+    for (var i=0;i<msgs.length;i++){ var m=msgs[i]; var role=m.role==='user'?'User':(m.role==='assistant'?'AI':(m.role||'Unknown')); md += '### '+role+'  \\\\n*Time:* '+(m.time||'')+'\\n\\n'+String(m.text||'').replace(/^#/gm,'\\\\#')+'\\n\\n---\\n\\n'; }
+    dl(new Blob([md],{type:'text/markdown;charset=utf-8'}),'chatgpt_export_'+ts()+'.md');
+  });
 </script>
 </body></html>`;
-    return page;
-  }
-function timestampForFile(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
-  function baseFileName(){
-    const title = (document.title || 'chatgpt').replace(/[\\\/:*?"<>|]+/g,'_').slice(0,60);
-    return `${title}_${timestampForFile()}`;
-  }
-  function saveTextAs(body, mime, filename){
-    try { chrome.runtime.sendMessage({ type: 'SAVE_TEXT_AS', body, mime, filename }); } catch(e) {}
-  }
+
+  saveTextAs(page, 'text/html;charset=utf-8', baseFileName()+'.html');
+}
 
   // ===== Wire buttons =====
-  btnMD.addEventListener('click', ()=> saveTextAs(exportMarkdown(), 'text/markdown;charset=utf-8', baseFileName()+'.md'));
-  btnJSON.addEventListener('click', ()=> saveTextAs(exportJSON(), 'application/json;charset=utf-8', baseFileName()+'.json'));
-  btnHTML.addEventListener('click', ()=> saveTextAs(exportHTML(), 'text/html;charset=utf-8', baseFileName()+'.html'));
+btnMD.addEventListener('click', exportMarkdown);
+btnJSON.addEventListener('click', exportJSON);
+btnHTML.addEventListener('click', exportHTML);
 
   // Settings button opens options page
   btnSettings.addEventListener('click', ()=>{
@@ -564,9 +570,9 @@ function timestampForFile(){ return new Date().toISOString().replace(/[:.]/g,'-'
         const wants = Array.isArray(v.formats) ? v.formats.slice() : ['html'];
         let saved = false;
         try {
-          if (wants.includes('html')) { saveTextAs(exportHTML(), 'text/html;charset=utf-8', base+'.html'); saved = true; }
-          if (wants.includes('md'))   { saveTextAs(exportMarkdown(), 'text/markdown;charset=utf-8', base+'.md'); saved = true; }
-          if (wants.includes('json')) { saveTextAs(exportJSON(), 'application/json;charset=utf-8', base+'.json'); saved = true; }
+          if (wants.includes('html')) exportHTML();
+          if (wants.includes('md'))   exportMarkdown();
+          if (wants.includes('json')) exportJSON();
         } catch(e){}
         if (saved) exportedOnce = true;
       }
