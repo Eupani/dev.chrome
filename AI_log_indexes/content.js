@@ -422,12 +422,13 @@ function exportHTML(){
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans JP","Hiragino Kaku Gothic ProN","Meiryo",sans-serif;}
   .wrap{
     display:grid;
-    grid-template-columns:minmax(0,1fr) 340px; /* 1fr を縮め可能に */
+    grid-template-columns:minmax(0,1fr) auto; /* 本文は伸縮、右列は実サイズ */
     gap:12px;
-    max-width:min(1200px,100%);  /* 画面幅を越えない */
-    margin:20px auto;
-    padding:0 12px;
-  } 
+    width:100%;              /* 画面いっぱい */
+    max-width:none;          /* 中央の箱をやめる */
+    margin:16px 0;           /* 上下だけ余白（左右はゼロ） */
+    padding:0 clamp(8px,2vw,16px); /* ほんの少しの左右内側余白 */
+  }
   .chat, .panel { min-width:0; }
   @media (max-width:960px){ .wrap{grid-template-columns:1fr;} .panel{order:-1;position:static;height:auto;} }
   header{grid-column:1/-1;margin-bottom:2px} header h1{margin:0 0 6px;font-size:20px;font-weight:700} header .meta{font-size:12px;color:var(--sub)}
@@ -458,6 +459,11 @@ function exportHTML(){
   .link .head{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .footer{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px}.btn{padding:10px 12px;font-size:12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer}.btn.primary{background:var(--accent);color:#fff;border:none}
   img, video { max-width:100%; height:auto; }
+  .panel{
+    width:clamp(260px, 28vw, 460px); /* 画面に応じて 260〜460px で可変 */
+    justify-self:end;                /* 右端に寄せる */
+    position:sticky; top:12px;       /* 既存のstickyを踏襲 */
+  }
   </style>
 </head>
 <body>
