@@ -125,6 +125,33 @@
   }
   function firstLine(s){ return (s||'').split(/\n/)[0].slice(0,160); }
 
+  function pad2(n){ return (n<10?'0':'') + n; }
+  function fmtLocal(iso){
+    try{
+      const d = (iso instanceof Date) ? iso : new Date(iso);
+      if (isNaN(d)) return '';
+      return d.getFullYear() + '/' + pad2(d.getMonth()+1) + '/' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + '/' + pad2(d.getMinutes()) + '/' + pad2(d.getSeconds());
+    }catch(e){ return ''; }
+  }
+  function seenISO(el){
+    try{
+      if (el && el.dataset && el.dataset.cgptSeenAt) return el.dataset.cgptSeenAt;
+      let dt = null;
+      try{
+        const t = el && (el.querySelector && (el.querySelector('time[datetime]') || el.querySelector('time')));
+        if (t){
+          const raw = t.getAttribute('datetime') || t.getAttribute('title') || t.textContent;
+          const d = new Date(raw);
+          if (!isNaN(d)) dt = d;
+        }
+      }catch(e){}
+      if (!dt) dt = new Date();
+      const iso = dt.toISOString();
+      try{ if (el && el.dataset) el.dataset.cgptSeenAt = iso; }catch(e){}
+      return iso;
+    }catch(e){ return new Date().toISOString(); }
+  }
+
   // ===== Build list =====
   function rebuild(){
     const nodes = getMessageNodes();
@@ -136,7 +163,9 @@
       if (role!=='user' && !chkAssistant.checked) continue;
       const line = firstLine(text);
       const id = el.getAttribute('data-message-id') || el.id || '';
-      lines.push({el, role, line, id, text});
+      const iso = seenISO(el);
+      const when = fmtLocal(iso);
+      lines.push({el, role, line, id, text, time: when, timeISO: iso});
     }
     const q = (filterEl.value || '').trim().toLowerCase();
     const filtered = q ? lines.filter(x=> (x.line + ' ' + (x.text||'')).toLowerCase().includes(q)) : lines;
@@ -148,7 +177,7 @@
       const pillClass = (x.role==='user'?'is-user':'');
       const pillLabel = (x.role==='user'?'User':'AI');
       const head = x.line.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
-      li.innerHTML = `<span class="rolepill ${pillClass}">${pillLabel}</span><span class="cgpt-index-item-head">${x.line.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;')}</span>`;
+      li.innerHTML = `<span class="rolepill ${pillClass}">${pillLabel}</span><span class="msg-time">${x.time||""}</span><span class="cgpt-index-item-head">${x.line.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;')}</span>`;
       li.dataset.full = x.text;
       li.title = x.line;
       li.addEventListener('mouseenter', ()=>{ showBubbleForLI(li); });
@@ -162,7 +191,7 @@
   
     try {
       if (typeof lines !== 'undefined' && Array.isArray(lines) && lines.length) {
-        const messages = lines.map(x => ({ role: x.role==='user'?'user':'assistant', text: String(x.text||x.line||'') }));
+        const messages = lines.map((x,i) => ({ idx: i+1, role: x.role==='user'?'user':'assistant', text: String(x.text||x.line||''), time: x.time||'' }));
         const title = (document.title || 'ChatGPT').replace(/[\\/:*?"<>|]+/g,'_');
         window.__CGPT_LAST_SNAPSHOT__ = { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages };
       }
@@ -223,39 +252,29 @@
   }
 
   // ===== Export helpers =====
-  function collectData(){
+  
+function collectData(){
     const nodes = getMessageNodes();
     const items = [];
     nodes.forEach((el, idx)=>{
+      const iso = seenISO(el);
+      const when = fmtLocal(iso);
       items.push({
         idx: idx+1,
         role: roleOf(el),
         text: el.innerText || el.textContent || '',
+        time: when
       });
     });
     const title = (document.title || 'ChatGPT').replace(/[\\/:*?"<>|]+/g,'_');
     if (items.length===0 && window.__CGPT_LAST_SNAPSHOT__ && Array.isArray(window.__CGPT_LAST_SNAPSHOT__.messages) && window.__CGPT_LAST_SNAPSHOT__.messages.length){
       const snap = window.__CGPT_LAST_SNAPSHOT__;
-      const meta = {
-        title: (snap.meta && snap.meta.title) ? snap.meta.title : title,
-        url: (snap.meta && snap.meta.url) ? snap.meta.url : location.href,
-        exported_at: new Date().toISOString()
-      };
+      const meta = { title: (snap.meta && snap.meta.title) ? snap.meta.title : title, url: (snap.meta && snap.meta.url) ? snap.meta.url : location.href, exported_at: new Date().toISOString() };
       return { meta, messages: snap.messages };
     }
     return { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages: items };
   }
-);
-    });
-    const title = (document.title || 'ChatGPT').replace(/[\\\/:*?"<>|]+/g,'_');
-    if (items.length===0 && window.__CGPT_LAST_SNAPSHOT__ && Array.isArray(window.__CGPT_LAST_SNAPSHOT__.messages) && window.__CGPT_LAST_SNAPSHOT__.messages.length){
-      // FALLBACK_SNAPSHOT: use last snapshot when live scrape returns 0 (settings page / virtualized)
-      const snap = window.__CGPT_LAST_SNAPSHOT__;
-      return { meta: { title: snap.meta && snap.meta.title ? snap.meta.title : title, url: snap.meta && snap.meta.url ? snap.meta.url : location.href, exported_at: new Date().toISOString() }, messages: snap.messages };
-    }
-    return { meta: { title, url: location.href, exported_at: new Date().toISOString() }, messages: items };
-  }
-  function exportJSON(){
+function exportJSON(){
     const data = collectData();
     return JSON.stringify(data, null, 2);
   }
@@ -263,7 +282,7 @@
     const data = collectData();
     const lines = ['# ' + data.meta.title, '', '- URL: ' + data.meta.url, '- Exported: ' + data.meta.exported_at, '', '---',''];
     data.messages.forEach(m=>{
-      lines.push(`## ${m.idx}. ${m.role === 'user' ? 'User' : 'Assistant'}`);
+      lines.push(`## ${m.idx}. ${m.role === 'user' ? 'User' : 'Assistant'}  ${m.time||''}`);
       lines.push('');
       lines.push(m.text);
       lines.push('');
@@ -550,7 +569,6 @@ function timestampForFile(){ return new Date().toISOString().replace(/[:.]/g,'-'
           if (wants.includes('json')) { saveTextAs(exportJSON(), 'application/json;charset=utf-8', base+'.json'); saved = true; }
         } catch(e){}
         if (saved) exportedOnce = true;
-      }
       }
 
       // Close

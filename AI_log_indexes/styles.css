@@ -229,3 +229,9 @@ html.cgpt-index-open #cgpt-index-fab{ right: calc(var(--cgpt-index-width, 360px)
   border-radius:8px; min-width:34px; text-align:center; font-weight:600; color: var(--cgpt-fg); opacity:.8; margin-right:8px;
 }
 #cgpt-index-panel .cgpt-index-item.u .rolepill{ color: var(--cgpt-accent); }
+
+/* timestamp near role pill in index list */
+.cgpt-index-item .msg-time{ font-size:11px; color: var(--cgpt-sub); margin: 0 8px; }
+
+/* smaller index body text (~-20%) */
+.cgpt-index-item .cgpt-index-item-head{ font-size:0.8em; }
