@@ -405,170 +405,18 @@ ${mdEscape(m.text)}
 
 // === HTML（サイドバー付き・今の見た目）のエクスポート ===
 function exportHTML(){
-  const meta = currentPageMeta();
-  const msgs = filteredMessages();
-  const data = { meta, messages: msgs };
-
-  // JSONを<script type="application/json">に安全に埋め込む
-  const dataJSON = escJSON(JSON.stringify(data));
-
-  // 内側 <script> に書くコードでは、外側テンプレ内のエスケープのため **'\\n'** を使う
-  const page = `<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${meta.title.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')} - Export</title>
-<style>
-  :root{ --bg:#0b1020; --fg:#e5e7eb; --sub:#9ca3af; --border:rgba(255,255,255,.08); --card:#0f172a; --ai:#1f2937; --user:#1e3a8a; --bubble:#111827; --panel:#0f172a; --accent:#3b82f6; }
-  @media (prefers-color-scheme: light){ :root{ --bg:#f8fafc; --fg:#111827; --sub:#6b7280; --border:rgba(0,0,0,.08); --card:#ffffff; --ai:#374151; --user:#1d4ed8; --bubble:#ffffff; --panel:#ffffff; --accent:#2563eb; } }
-  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans JP","Hiragino Kaku Gothic ProN","Meiryo",sans-serif;}
-  .wrap{
-    display:grid;
-    grid-template-columns:minmax(0,1fr) auto; /* 本文は伸縮、右列は実サイズ */
-    gap:12px;
-    width:100%;              /* 画面いっぱい */
-    max-width:none;          /* 中央の箱をやめる */
-    margin:16px 0;           /* 上下だけ余白（左右はゼロ） */
-    padding:0 clamp(8px,2vw,16px); /* ほんの少しの左右内側余白 */
+  const data = { meta: currentPageMeta(), messages: filteredMessages() };
+  try {
+    const html = (typeof buildHtmlFromData !== 'undefined')
+      ? buildHtmlFromData(data)
+      : (typeof self !== 'undefined' && self.buildHtmlFromData ? self.buildHtmlFromData(data) : '');
+    if (!html) throw new Error('buildHtmlFromData missing');
+    saveTextAs(html, 'text/html;charset=utf-8', baseFileName()+'.html');
+  } catch(e) {
+    try { console.error('[exportHTML] failed to build html', e); } catch(_) {}
+    try { alert('HTMLの生成に失敗しました: '+ e); } catch(_) {}
   }
-  .chat, .panel { min-width:0; }
-  @media (max-width:960px){ .wrap{grid-template-columns:1fr;} .panel{order:-1;position:static;height:auto;} }
-  header{grid-column:1/-1;margin-bottom:2px} header h1{margin:0 0 6px;font-size:20px;font-weight:700} header .meta{font-size:12px;color:var(--sub)}
-  .row{display:flex;gap:12px;align-items:flex-start}.row.ai{justify-content:flex-start}.row.user{justify-content:flex-end}
-  .bubble{max-width:100%;background:var(--bubble);border:1px solid var(--border);border-radius:16px;padding:12px 14px;margin:10px 0;box-shadow:0 2px 8px rgba(0,0,0,.08)}
-  .meta{font-size:11px;color:var(--sub);margin-bottom:6px}.badge{font-size:11px;border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-weight:600;color:var(--ai)} .user .badge{color:var(--user)} .time{margin-left:6px}
-  .content{
-    white-space:pre-wrap;
-    word-break:break-word;
-    overflow-wrap:anywhere;
-  }.content pre{
-    background:rgba(0,0,0,.35);
-    border:1px solid var(--border);
-    border-radius:10px;
-    padding:10px;
-    overflow:auto;
-    max-width:100%;
-  }
-  border:1px solid var(--border);border-radius:10px;padding:10px;overflow:auto}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px}
-  .panel{position:sticky;top:12px;height:calc(100vh - 24px);display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
-  .panel header{padding:10px 12px;border-bottom:1px solid var(--border)} .panel header .title{font-size:14px;font-weight:700} .panel .sub{font-size:11px;color:var(--sub);margin-top:4px}
-  .controls{display:grid;grid-template-columns:1fr auto auto;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
-  .controls input[type=search]{padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--fg)}
-  .controls label{font-size:11px;display:flex;gap:6px;align-items:center}
-  .list{list-style:none;margin:0;padding:8px 12px;overflow:auto;flex:1}
-  .item{margin:6px 0}.link{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:8px;width:100%;text-align:left;background:transparent;border:none;border-radius:10px;cursor:pointer;color:inherit}
-  .link:hover{background:rgba(255,255,255,.06)} .rolepill{font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;min-width:34px;text-align:center;font-weight:600;color:var(--ai)} .is-user{color:var(--user)}
-  .link .head{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .footer{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px}.btn{padding:10px 12px;font-size:12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer}.btn.primary{background:var(--accent);color:#fff;border:none}
-  img, video { max-width:100%; height:auto; }
-  .panel{
-    width:clamp(260px, 28vw, 460px); /* 画面に応じて 260〜460px で可変 */
-    justify-self:end;                /* 右端に寄せる */
-    position:sticky; top:12px;       /* 既存のstickyを踏襲 */
-  }
-  </style>
-</head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>ChatGPT Conversation Export</h1>
-    <div class="meta">Title: ${meta.title.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')}<br>URL: <a href="${meta.url.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')}">${meta.url.replace(/[&<>]/g, c=>c==='&'?'&amp;':(c==='<')?'&lt;':'&gt;')}</a><br>Exported: ${meta.exported_at} (${meta.timezone})</div>
-  </header>
-
-  <main class="chat" id="chat"></main>
-
-  <aside class="panel" id="panel">
-    <header><div class="title">会話インデックス</div><div class="sub">クリックで本文へ移動／検索と役割で絞り込み</div></header>
-    <div class="controls">
-      <input id="q" type="search" placeholder="フィルタ...">
-      <label><input type="checkbox" id="fUser" checked> User</label>
-      <label><input type="checkbox" id="fAI" checked> AI</label>
-    </div>
-    <ul class="list" id="list"></ul>
-    <div class="footer">
-      <button class="btn primary" id="expMd">Markdown</button>
-      <button class="btn" id="expJson">JSON</button>
-    </div>
-  </aside>
-</div>
-
-<script id="data" type="application/json">${dataJSON}</script>
-<script>
-  var DATA = JSON.parse(document.getElementById('data').textContent);
-  var chat = document.getElementById('chat');
-  var list = document.getElementById('list');
-  var inF = document.getElementById('q');
-  var cbU = document.getElementById('fUser');
-  var cbA = document.getElementById('fAI');
-
-  function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
-  function headLine(text){
-    var t=String(text||'').replace(/\\s+/g,' ').trim();
-    if(!t) return '(empty)';
-    var m=t.match(/^(.{1,120}?)([。．.!?？]|$)/);
-    return (m&&m[1])?m[1]:t.slice(0,120);
-  }
-  function renderBody(text){
-    var FENCE = String.fromCharCode(96,96,96);
-    var parts = String(text||'').split(FENCE);
-    var out = '';
-    for (var i=0;i<parts.length;i++){
-      if (i % 2 === 1){
-        var seg = parts[i]; var nl = seg.indexOf('\\\\n'); // ← **重要**: '\\n'
-        var body = (nl !== -1) ? seg.slice(nl+1) : seg;
-        out += '<pre><code>' + esc(body) + '</code></pre>';
-      } else {
-        var para = esc(parts[i]).replace(/\\n\\n+/g,'</p><p>').replace(/\\n/g,'<br>');
-        if (i===0 && !/^\\s*<p>/.test(para)) out += '<p>';
-        out += para;
-      }
-    }
-    if (!/<\\/p>\\s*$/.test(out)) out += '</p>';
-    return out;
-  }
-
-  function build(){
-    chat.innerHTML=''; list.innerHTML='';
-    var kw=(inF.value||'').toLowerCase();
-    var showU=cbU.checked, showA=cbA.checked;
-    var msgs = DATA.messages.filter(function(m){
-      var roleOK=(m.role==='user'&&showU)||(m.role==='assistant'&&showA)||(!['user','assistant'].includes(m.role));
-      var textOK=!kw||(m.text||'').toLowerCase().includes(kw);
-      return roleOK && textOK;
-    });
-    for (var i=0;i<msgs.length;i++){
-      var m=msgs[i];
-      var row=document.createElement('section');
-      row.className='row ' + (m.role==='user'?'user':'ai');
-      row.id=m.id||('m'+(i+1));
-      row.innerHTML='<div class="bubble"><div class="meta"><span class="badge">'+(m.role==='user'?'User':'AI')+'</span><span class="time">'+(m.time||'')+'</span></div><div class="content">'+renderBody(m.text||'')+'</div></div>';
-      chat.appendChild(row);
-
-      var li=document.createElement('li'); li.className='item';
-      li.innerHTML='<button class="link"><span class="rolepill '+(m.role==='user'?'is-user':'')+'">'+(m.role==='user'?'User':'AI')+'</span><span class="head">'+esc(headLine(m.text||''))+'</span></button>';
-      li.querySelector('.link').addEventListener('click', (function(targetId){ return function(){ var el=document.getElementById(targetId); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }; })(row.id));
-      list.appendChild(li);
-    }
-  }
-  inF.addEventListener('input', build);
-  cbU.addEventListener('change', build);
-  cbA.addEventListener('change', build);
-  build();
-
-  function ts(){ return new Date().toISOString().replace(/[:.]/g,'-'); }
-  function dl(blob, name){ var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); setTimeout(function(){URL.revokeObjectURL(a.href);}, 3000); }
-
-  document.getElementById('expJson').addEventListener('click', function(){
-    dl(new Blob([JSON.stringify(DATA,null,2)],{type:'application/json;charset=utf-8'}),'chatgpt_export_'+ts()+'.json');
-  });
-  document.getElementById('expMd').addEventListener('click', function(){
-    var meta=DATA.meta, msgs=DATA.messages, md = '# ChatGPT Conversation Export\\n\\n- Title: '+meta.title+'\\n- URL: '+meta.url+'\\n- Exported: '+meta.exported_at+' ('+meta.timezone+')\\n\\n---\\n\\n';
-    for (var i=0;i<msgs.length;i++){ var m=msgs[i]; var role=m.role==='user'?'User':(m.role==='assistant'?'AI':(m.role||'Unknown')); md += '### '+role+'  \\\\n*Time:* '+(m.time||'')+'\\n\\n'+String(m.text||'').replace(/^#/gm,'\\\\#')+'\\n\\n---\\n\\n'; }
-    dl(new Blob([md],{type:'text/markdown;charset=utf-8'}),'chatgpt_export_'+ts()+'.md');
-  });
-</script>
-</body></html>`;
-
-  saveTextAs(page, 'text/html;charset=utf-8', baseFileName()+'.html');
-}
+};
 
   // ===== Wire buttons =====
 btnMD.addEventListener('click', exportMarkdown);

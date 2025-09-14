@@ -13,6 +13,7 @@
         "https://chatgpt.com/*"
       ],
       "js": [
+        "export_template.js",
         "content.js"
       ],
       "css": [

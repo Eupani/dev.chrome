@@ -1,3 +1,4 @@
+importScripts('export_template.js');
 // sw.js v1.2.3 — robust window-close handling
 const SNAP_PREFIX = 'snap:';                // session mirror
 const SNAP_LOCAL_KEY = 'cgpt:snap_local_v1';// local mirror (array of {tabId, windowId, auto, data, t})
@@ -6,7 +7,7 @@ const PENDING_KEY = 'cgpt:pending_exports_v1';
 function esc(s){ return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function escJSON(s){ return String(s||'').replace(/[&<>]/g,c=>c==='&'?'&amp;':(c==='<'?'&lt;':'&gt;')).replace(/<\/script/gi,'<\\/script>'); }
 
-function buildHtmlFromData(data) {
+function buildHtmlFromData_legacy(data) {
   const meta = data.meta || {};
   const msgs = data.messages || [];
   const head = `<!doctype html>
