@@ -130,7 +130,7 @@
     try{
       const d = (iso instanceof Date) ? iso : new Date(iso);
       if (isNaN(d)) return '';
-      return d.getFullYear() + '/' + pad2(d.getMonth()+1) + '/' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + '/' + pad2(d.getMinutes()) + '/' + pad2(d.getSeconds());
+      return d.getFullYear() + '/' + pad2(d.getMonth()+1) + '/' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
     }catch(e){ return ''; }
   }
   function seenISO(el){
