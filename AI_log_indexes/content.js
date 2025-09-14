@@ -45,6 +45,38 @@
   + '</div>';
   document.documentElement.appendChild(panel);
 
+  const style = document.createElement('style');
+  style.id = 'cgpt-index-style';
+  style.textContent = `
+    :root { --cgpt-index-width: 320px; }
+    /* パネルは常に画面内（右固定）。max-width を 100vw 基準でクランプ */
+    #${PANEL_ID} {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100vh;
+      width: var(--cgpt-index-width);
+      max-width: calc(100vw - 24px); /* 画面から24pxはみ出さない */
+      min-width: 220px;
+      box-sizing: border-box;
+      z-index: 2147483647;
+      overflow: auto;
+
+      /* （任意の見た目・枠線。既存テーマがあるなら削ってOK） */
+      background: rgba(17, 24, 39, .96);
+      border-left: 1px solid rgba(255,255,255,.08);
+      backdrop-filter: blur(6px);
+    }
+
+    /* FAB とプレビューバブルも安全に最前面へ */
+    #${FAB_ID} { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; }
+    #cgpt-index-bubble { position: absolute; z-index: 2147483647; }
+
+    /* パネルを非表示にするとき */
+    .cgpt-index-hidden { display: none !important; }
+  `;
+  document.documentElement.appendChild(style);
+
   // ===== FAB =====
   const fab = document.createElement('button');
   fab.id = FAB_ID;
@@ -71,7 +103,13 @@
   const btnSettings = panel.querySelector('#cgpt-open-settings');
 
   // ===== Panel open/close =====
-  function openPanel(){ panel.classList.remove('cgpt-index-hidden'); document.documentElement.classList.add('cgpt-index-open'); setPageOffsetByPanelWidth(); try{localStorage.setItem(STORAGE_KEY_VIS,'visible');}catch{} }
+  function openPanel(){
+    panel.classList.remove('cgpt-index-hidden');
+    document.documentElement.classList.add('cgpt-index-open');
+    setPageOffsetByPanelWidth();
+    try{localStorage.setItem(STORAGE_KEY_VIS,'visible');}catch{}
+    clampPanelWidthToViewport();               // ★ 追加：開くたびにクランプ
+  }
   function closePanel(){ panel.classList.add('cgpt-index-hidden'); document.documentElement.classList.remove('cgpt-index-open'); setPageOffsetByPanelWidth(); try{localStorage.setItem(STORAGE_KEY_VIS,'hidden');}catch{} }
   function togglePanel(){ panel.classList.contains('cgpt-index-hidden') ? openPanel() : closePanel(); }
   try {
@@ -80,8 +118,31 @@
     const vis = localStorage.getItem(STORAGE_KEY_VIS);
     if (vis !== 'hidden') openPanel(); else closePanel();
   } catch { openPanel(); }
+  clampPanelWidthToViewport();
 
   // ===== Utils =====
+  function clampPanelWidthToViewport() {
+    const SAFE_MARGIN = 24;                     // 画面左右の安全マージン
+    const vw = Math.max(320, window.innerWidth || document.documentElement.clientWidth || 0);
+    const minW = Math.min(280, Math.max(220, vw - SAFE_MARGIN * 2)); // 画面が狭い時は最小幅も縮む
+    const hardMax = Math.max(minW, Math.floor(vw * 0.6));            // 通常の上限
+    const cssMax = vw - SAFE_MARGIN;                                 // CSS上の絶対上限（= calc(100vw - 24px) と一致させる）
+    const maxW = Math.min(hardMax, cssMax);
+
+    const cur = panel.getBoundingClientRect().width || minW;
+    const clamped = Math.max(minW, Math.min(cur, maxW));
+
+    // style.maxWidth / minWidth も同期（ローカル保存の幅が暴れても守る）
+    panel.style.minWidth = minW + 'px';
+    panel.style.maxWidth = cssMax + 'px';
+    panel.style.width = clamped + 'px';
+
+    // 変数は見た目調整用。横スクロールは発生しない（fixedなため）
+    document.documentElement.style.setProperty('--cgpt-index-width', clamped + 'px');
+  }
+  window.addEventListener('resize', clampPanelWidthToViewport, {passive:true});
+  clampPanelWidthToViewport();
+
   function setPageOffsetByPanelWidth() {
     const w = panel.getBoundingClientRect().width;
     document.documentElement.style.setProperty('--cgpt-index-width', w + 'px');
@@ -216,7 +277,9 @@
   bubble.id = 'cgpt-index-bubble';
   bubble.setAttribute('role','tooltip');
   bubble.className = 'cgpt-index-bubble';
-  bubble.style.display = 'none';
+  bubble.style.whiteSpace   = 'pre-wrap';   // 改行保持＋折返し
+  bubble.style.wordBreak    = 'break-word'; // 長い単語も折返し
+  bubble.style.overflowWrap = 'anywhere';   // 連続英字/URLも安全に折返し
   document.documentElement.appendChild(bubble);
 
   let bubbleTimer = null;
@@ -233,36 +296,48 @@
   }
 
   function showBubbleForLI(li){
-    const text = (li && li.dataset && (li.dataset.full || li.dataset.full === '')) ? li.dataset.full : (li ? (li.getAttribute('title') || li.textContent || '') : '');
+    const text = (li && li.dataset && (li.dataset.full || li.dataset.full === ''))
+      ? li.dataset.full
+      : (li ? (li.getAttribute('title') || li.textContent || '') : '');
     if (!text) return;
+
     if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer=null; }
     bubble.textContent = text;
+    bubble.style.visibility = 'hidden';
     bubble.style.display = 'block';
-    bubble.style.visibility = 'hidden'; // measure first
 
-    // desired width
-    const width = Math.min(460, Math.max(280, window.innerWidth * 0.35));
-    bubble.style.width = width + 'px';
-
-    // measure height with current content
     const rect = li.getBoundingClientRect();
+    const margin = 16;
+    const vw = window.innerWidth;
+    const availableLeft  = Math.max(0, rect.left - margin);
+    const availableRight = Math.max(0, vw - rect.right - margin);
+
+    // 可用スペース内で 280–560px にクランプ
+    let side = 'left';
+    let width;
+    if (availableLeft >= 280) {
+      width = Math.min(560, availableLeft);
+      side = 'left';
+    } else {
+      width = Math.min(560, Math.max(280, availableRight));
+      side = 'right';
+    }
+    bubble.style.width = Math.round(width) + 'px';
+
     const bcr = bubble.getBoundingClientRect();
-    let left = rect.left - width - 16;
-    let top = rect.top + (rect.height/2) - (bcr.height/2);
+    let left = (side === 'left') ? (rect.left - width - margin) : (rect.right + margin);
+    let top  = rect.top + (rect.height/2) - (bcr.height/2);
+
+    // 画面内に収める
     top = Math.max(12, Math.min(top, window.innerHeight - bcr.height - 12));
 
-    // if no space on the left, place to right of panel/item
-    if (left < 4) {
-      left = rect.right + 16;
-      bubble.classList.remove('left'); bubble.classList.add('right');
-    } else {
-      bubble.classList.remove('right'); bubble.classList.add('left');
-    }
-
+    bubble.classList.remove('left','right');
+    bubble.classList.add(side);
     bubble.style.left = Math.round(left) + 'px';
     bubble.style.top  = Math.round(top + window.scrollY) + 'px';
     bubble.style.visibility = 'visible';
   }
+
 
 // ===== Export helpers =====
 function currentPageMeta(){
@@ -345,13 +420,33 @@ function exportHTML(){
   :root{ --bg:#0b1020; --fg:#e5e7eb; --sub:#9ca3af; --border:rgba(255,255,255,.08); --card:#0f172a; --ai:#1f2937; --user:#1e3a8a; --bubble:#111827; --panel:#0f172a; --accent:#3b82f6; }
   @media (prefers-color-scheme: light){ :root{ --bg:#f8fafc; --fg:#111827; --sub:#6b7280; --border:rgba(0,0,0,.08); --card:#ffffff; --ai:#374151; --user:#1d4ed8; --bubble:#ffffff; --panel:#ffffff; --accent:#2563eb; } }
   *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans JP","Hiragino Kaku Gothic ProN","Meiryo",sans-serif;}
-  .wrap{display:grid;grid-template-columns:1fr 340px;gap:12px;max-width:1200px;margin:20px auto;padding:0 12px;}
+  .wrap{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 340px; /* 1fr を縮め可能に */
+    gap:12px;
+    max-width:min(1200px,100%);  /* 画面幅を越えない */
+    margin:20px auto;
+    padding:0 12px;
+  } 
+  .chat, .panel { min-width:0; }
   @media (max-width:960px){ .wrap{grid-template-columns:1fr;} .panel{order:-1;position:static;height:auto;} }
   header{grid-column:1/-1;margin-bottom:2px} header h1{margin:0 0 6px;font-size:20px;font-weight:700} header .meta{font-size:12px;color:var(--sub)}
   .row{display:flex;gap:12px;align-items:flex-start}.row.ai{justify-content:flex-start}.row.user{justify-content:flex-end}
   .bubble{max-width:100%;background:var(--bubble);border:1px solid var(--border);border-radius:16px;padding:12px 14px;margin:10px 0;box-shadow:0 2px 8px rgba(0,0,0,.08)}
   .meta{font-size:11px;color:var(--sub);margin-bottom:6px}.badge{font-size:11px;border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-weight:600;color:var(--ai)} .user .badge{color:var(--user)} .time{margin-left:6px}
-  .content{white-space:pre-wrap;word-break:break-word}.content pre{background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:10px;padding:10px;overflow:auto}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px}
+  .content{
+    white-space:pre-wrap;
+    word-break:break-word;
+    overflow-wrap:anywhere;
+  }.content pre{
+    background:rgba(0,0,0,.35);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:10px;
+    overflow:auto;
+    max-width:100%;
+  }
+  border:1px solid var(--border);border-radius:10px;padding:10px;overflow:auto}.content code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px}
   .panel{position:sticky;top:12px;height:calc(100vh - 24px);display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
   .panel header{padding:10px 12px;border-bottom:1px solid var(--border)} .panel header .title{font-size:14px;font-weight:700} .panel .sub{font-size:11px;color:var(--sub);margin-top:4px}
   .controls{display:grid;grid-template-columns:1fr auto auto;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
@@ -362,7 +457,8 @@ function exportHTML(){
   .link:hover{background:rgba(255,255,255,.06)} .rolepill{font-size:11px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;min-width:34px;text-align:center;font-weight:600;color:var(--ai)} .is-user{color:var(--user)}
   .link .head{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .footer{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px}.btn{padding:10px 12px;font-size:12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:inherit;cursor:pointer}.btn.primary{background:var(--accent);color:#fff;border:none}
-</style>
+  img, video { max-width:100%; height:auto; }
+  </style>
 </head>
 <body>
 <div class="wrap">
@@ -481,26 +577,36 @@ btnHTML.addEventListener('click', exportHTML);
   });
 
   // ===== Resizer =====
-  (function(){
-  // Rolling snapshot for export fallback
-  window.__CGPT_LAST_SNAPSHOT__ = null;
+  (()=>{
+    let dragging=false, startX=0, startWidth=0;
+    const minW = 260;
+    const maxW = () => {
+      const SAFE_MARGIN = 24;
+      const vw = Math.max(320, window.innerWidth || document.documentElement.clientWidth || 0);
+      const cssMax = vw - SAFE_MARGIN;                 // CSS と同じ上限
+      const hardMax = Math.floor(vw * 0.6);            // 通常の上限
+      return Math.max(220, Math.min(cssMax, Math.max(280, hardMax)));
+    };
 
-    let startX=0, startW=0, dragging=false;
-    resizer.addEventListener('mousedown', (e)=>{
-      dragging=true; startX=e.clientX; startW=panel.getBoundingClientRect().width;
-      document.body.classList.add('cgpt-resizing');
-      e.preventDefault();
-    });
-    window.addEventListener('mousemove', (e)=>{
-      if(!dragging) return;
-      const w = Math.max(260, startW + (e.clientX - startX));
+    const move = (e) => {
+      if (!dragging) return;
+      const minW = parseFloat(panel.style.minWidth) || 220;
+      let w = startWidth + (e.clientX - startX);       // 右端固定なので +dx（必要なら符号は環境に合わせて）
+      w = Math.max(minW, Math.min(w, maxW()));
       panel.style.width = w + 'px';
-      setPageOffsetByPanelWidth();
-    }, {passive:true});
-    window.addEventListener('mouseup', ()=>{
+      document.documentElement.style.setProperty('--cgpt-index-width', w + 'px');
+    };
+    const up=()=>{
       if(!dragging) return;
-      dragging=false; document.body.classList.remove('cgpt-resizing');
+      dragging=false;
+      document.removeEventListener('mousemove',move);
+      document.removeEventListener('mouseup',up);
       try{ localStorage.setItem(STORAGE_KEY_WIDTH, panel.getBoundingClientRect().width + 'px'); }catch{}
+    };
+    resizer.addEventListener('mousedown', e=>{
+      dragging=true; startX=e.clientX; startWidth=panel.getBoundingClientRect().width;
+      document.addEventListener('mousemove',move);
+      document.addEventListener('mouseup',up);
     });
   })();
 
