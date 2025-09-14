@@ -86,10 +86,11 @@
     const w = panel.getBoundingClientRect().width;
     document.documentElement.style.setProperty('--cgpt-index-width', w + 'px');
   }
+  
   function normalizeText(el){
-    let t = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
-    return t;
+    return (el.innerText || el.textContent || '').replace(/\r\n?/g, '\n');
   }
+
   function roleOf(el){
     const r = el.getAttribute('data-message-author-role') || el.dataset.messageAuthorRole;
     if (r) return r;
@@ -157,16 +158,18 @@
   function rebuild(){
     const nodes = getMessageNodes();
     const lines = [];
-    for(const el of nodes){
+    for (const el of nodes){
       const role = roleOf(el);
-      const text = normalizeText(el);
+      const text = normalizeText(el);        // ← 改行を保持した本文
       if (role==='user' && !chkUser.checked) continue;
       if (role!=='user' && !chkAssistant.checked) continue;
-      const line = firstLine(text);
-      const id = el.getAttribute('data-message-id') || el.id || '';
-      const iso = seenISO(el);
+
+      const line = firstLine(text);          // ← 見出しは1行化だけ
+      const id   = el.getAttribute('data-message-id') || el.id || '';
+      const iso  = seenISO(el);
       const when = fmtLocal(iso);
-      lines.push({el, role, line, id, text, time: when, timeISO: iso});
+
+      lines.push({ el, role, line, id, text, time: when, timeISO: iso });
     }
     const q = (filterEl.value || '').trim().toLowerCase();
     const filtered = q ? lines.filter(x=> (x.line + ' ' + (x.text||'')).toLowerCase().includes(q)) : lines;
@@ -203,7 +206,7 @@
       index: i+1,
       id: x.id || ('cgpt-exp-' + (i+1)),
       role: x.role === 'user' ? 'user' : 'assistant',
-      text: String(x.text || x.line || ''),
+      text: String(x.text || x.line || ''),   // ← normalizeText の raw が入る
       time: x.time || ''
     }));
   }
