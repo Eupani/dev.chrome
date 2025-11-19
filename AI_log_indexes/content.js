@@ -24,7 +24,7 @@
   panel.innerHTML = ''
   + '<div class="cgpt-index-header">'
   + '  <div class="cgpt-index-title-row">'
-  + '    <div class="cgpt-index-title">会話インデックス</div>'
+  + '    <div class="cgpt-index-title">インデックス</div>'
   + '    <button id="cgpt-index-refresh" class="cgpt-btn" title="一覧を更新">⟳ 更新</button>'
   + '  </div>'
   + '  <div class="cgpt-index-actions">'

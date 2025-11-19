@@ -97,29 +97,30 @@
       <div class="titlebar">
         <label class="toggle main">
           <input type="checkbox" id="autoEnabled">
-          <span class="toggle-title">自動エクスポート（Auto Idle）</span>
+          <span class="toggle-title">自動エクスポート</span>
         </label>
+        チェックを入れたトリガに応じて自動でダウンロードします
       </div>
       </div>
       <div class="row child">
         <label><strong><input type="checkbox" id="onClose"> タブ/ウィンドウを閉じた時</strong></label>
-        <div class="hint">ページ終了時に最新の会話を保存します。</div>
+        <div class="hint">ページ終了時に最新の会話を保存します。<br>※終了処理に割り込むため、ウィンドウクローズの出力は不安定</div>
       </div>
       <div class="row child">
-        <label><strong><input type="checkbox" id="onBlurHidden"> 画面が <u>非表示</u> かつ <u>ウィンドウが非アクティブ</u>（blur & hidden）</strong></label>
+        <label><strong><input type="checkbox" id="onBlurHidden"> <u>非表示</u> かつ <u>非アクティブ</u></strong></label>
         <div>
-          <div class="hint">別タブへ切替・ウィンドウ最小化・他ウィンドウが前面になるなど、このタブを見ていない状態になったら、下の「遅延（秒）」だけ待って保存します。</div>
+          <div class="hint">別タブへ切替・ウィンドウ最小化・他ウィンドウが前面になるなど、タブを見ていない状態になったら、一定時間後に一度保存します。</div>
           <div style="margin-top:6px">
-            遅延（秒）：<span class="hint">1–600</span> <input type="number" id="blurHiddenDelaySec" min="1" step="1" value="15">
+            待機（秒）：<span class="hint">1–600</span> <input type="number" id="blurHiddenDelaySec" min="1" step="1" value="15">
           </div>
         </div>
       </div>
       <div class="row child">
-        <label><strong><input type="checkbox" id="onIdle"> 入力などの操作がない（アイドル）</strong></label>
+        <label><strong><input type="checkbox" id="onIdle"> 入力などの操作がない</strong></label>
         <div>
-          <div class="hint">マウス/キー/スクロール等の操作が一定時間ない場合に保存します。</div>
+          <div class="hint">マウス/キー/スクロール等の操作が一定時間ない場合に一度保存します。</div>
           <div style="margin-top:6px">
-            アイドル秒数：<span class="hint">10–7200</span> <input type="number" id="idleSec" min="10" step="5" value="300">
+            待機（秒）：<span class="hint">10–7200</span> <input type="number" id="idleSec" min="10" step="5" value="300">
           </div>
         </div>
       </div>
